@@ -1,0 +1,15 @@
+# Configuration globale trading-app
+exchange:
+  name: "binance"           # Nom de l'exchange (supporté par CCXT)
+  api_key: "YOUR_API_KEY"   # Clé API — NE PAS COMMITER
+  api_secret: "YOUR_SECRET" # Secret API — NE PAS COMMITER
+  testnet: true             # Utiliser le testnet (recommandé pour les tests)
+
+paths:
+  logs: "data/logs"
+  trades: "data/trades"
+  state: "data/state.json"
+
+defaults:
+  log_level: "INFO"         # INFO ou DEBUG
+  risk_percent: 1.0         # % du capital risqué par trade

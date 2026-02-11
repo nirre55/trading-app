@@ -2,3 +2,22 @@ _bmad/*
 _bmad-output/*
 .claude/*
 docs/*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Config secrets (ne pas commiter les vraies configs)
+config/config.yaml
+config/strategies/*.yaml
+!config/strategies/example_strategy.yaml
+
+# Data runtime (contenu ignoré, .gitkeep conservé pour le clone)
+data/*
+!data/.gitkeep
+
+# Outils dev
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

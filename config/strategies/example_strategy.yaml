@@ -1,0 +1,23 @@
+# Exemple de configuration de stratégie
+name: "example_strategy"
+pair: "BTC/USDT"
+exchange: "binance"
+timeframe: "1h"
+leverage: 10
+
+conditions:
+  - type: "rsi_oversold"
+    params:
+      period: 14
+      threshold: 30
+    max_gap_candles: 3
+  - type: "price_above_ma"
+    params:
+      period: 50
+
+timeout_candles: 10
+
+capital:
+  mode: "fixed_percent"
+  risk_percent: 1.0
+  risk_reward_ratio: 2.0
