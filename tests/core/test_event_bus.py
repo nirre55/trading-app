@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.core.event_bus import AsyncHandler, EventBus
+from src.core.event_bus import EventBus
 from src.models.events import (
     BaseEvent,
     CandleEvent,
