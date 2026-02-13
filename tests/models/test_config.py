@@ -78,7 +78,7 @@ class TestExchangeConfig:
 
     def test_champ_manquant_raise_validation_error(self):
         with pytest.raises(ValidationError):
-            ExchangeConfig(name="binance", api_key="key")
+            ExchangeConfig(name="binance", api_key="key")  # type: ignore
 
 
 class TestPathsConfig:
@@ -90,7 +90,7 @@ class TestPathsConfig:
 
     def test_champ_manquant_raise_validation_error(self):
         with pytest.raises(ValidationError):
-            PathsConfig(logs="logs")
+            PathsConfig(logs="logs")  # type: ignore
 
 
 class TestDefaultsConfig:
@@ -118,7 +118,7 @@ class TestAppConfig:
 
     def test_champ_manquant_raise_validation_error(self):
         with pytest.raises(ValidationError):
-            AppConfig(exchange=_valid_exchange_config())
+            AppConfig(exchange=_valid_exchange_config())  # type: ignore
 
     def test_type_invalide_raise_validation_error(self):
         data = _valid_app_config_dict()
@@ -170,7 +170,7 @@ class TestStrategyConfig:
 
     def test_champ_manquant_raise_validation_error(self):
         with pytest.raises(ValidationError):
-            StrategyConfig(name="test", pair="BTC/USDT")
+            StrategyConfig(name="test", pair="BTC/USDT")  # type: ignore
 
     def test_type_invalide_leverage_raise_validation_error(self):
         data = _valid_strategy_config_dict()
