@@ -8,8 +8,13 @@ import ccxt.pro
 from loguru import logger
 
 from src.core.event_bus import EventBus
-from src.core.exceptions import ExchangeConnectionError, ExchangeError
+from src.core.exceptions import (
+    ExchangeConnectionError,
+    ExchangeError,
+    InsufficientBalanceError,
+)
 from src.exchange.base import BaseExchangeConnector
+from src.exchange.rate_limiter import RateLimitConfig, RateLimiter
 from src.models.config import ExchangeConfig
 from src.models.events import CandleEvent, ErrorEvent, EventType, ExchangeEvent
 from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, OrderType
@@ -36,6 +41,7 @@ class CcxtConnector(BaseExchangeConnector):
         self._exchange_name: str = exchange_config.name
         self._reconnect_attempts: int = 0
         self._is_connected: bool = False
+        self._rate_limiter: RateLimiter = RateLimiter(RateLimitConfig())
 
     async def connect(self) -> None:
         """Connecte a l'exchange via CCXT Pro, charge les marches et les regles."""
@@ -73,6 +79,12 @@ class CcxtConnector(BaseExchangeConnector):
 
             self._is_connected = True
             self._reconnect_attempts = 0
+
+            logger.info(
+                "Rate limiter initialise: {} req/s, burst {}",
+                self._rate_limiter._config.max_requests_per_second,
+                self._rate_limiter._config.burst_size,
+            )
 
             await self._event_bus.emit(
                 EventType.EXCHANGE_CONNECTED,
@@ -285,36 +297,40 @@ class CcxtConnector(BaseExchangeConnector):
 
     async def fetch_market_rules(self, pair: str) -> MarketRules:
         """Recupere les regles de marche pour une paire depuis l'exchange."""
-        if pair not in self._exchange.markets:
-            logger.error("Paire {} non trouvee sur {}", pair, self._exchange_name)
-            raise ExchangeError(
-                f"Paire {pair} non trouvee sur {self._exchange_name}",
-                context={"pair": pair, "exchange": self._exchange_name},
+
+        async def _do_fetch() -> MarketRules:
+            if pair not in self._exchange.markets:
+                logger.error("Paire {} non trouvee sur {}", pair, self._exchange_name)
+                raise ExchangeError(
+                    f"Paire {pair} non trouvee sur {self._exchange_name}",
+                    context={"pair": pair, "exchange": self._exchange_name},
+                )
+
+            market = self._exchange.markets[pair]
+
+            step_size = Decimal(str(market["precision"]["amount"]))
+            tick_size = Decimal(str(market["precision"]["price"]))
+            min_notional = (
+                Decimal(str(market["limits"]["cost"]["min"]))
+                if market["limits"]["cost"]["min"] is not None
+                else Decimal("0")
+            )
+            max_leverage = (
+                int(market["limits"]["leverage"]["max"])
+                if market["limits"]["leverage"]["max"] is not None
+                else 1
             )
 
-        market = self._exchange.markets[pair]
+            rules = MarketRules(
+                step_size=step_size,
+                tick_size=tick_size,
+                min_notional=min_notional,
+                max_leverage=max_leverage,
+            )
+            logger.debug("Regles de marche pour {} : {}", pair, rules)
+            return rules
 
-        step_size = Decimal(str(market["precision"]["amount"]))
-        tick_size = Decimal(str(market["precision"]["price"]))
-        min_notional = (
-            Decimal(str(market["limits"]["cost"]["min"]))
-            if market["limits"]["cost"]["min"] is not None
-            else Decimal("0")
-        )
-        max_leverage = (
-            int(market["limits"]["leverage"]["max"])
-            if market["limits"]["leverage"]["max"] is not None
-            else 1
-        )
-
-        rules = MarketRules(
-            step_size=step_size,
-            tick_size=tick_size,
-            min_notional=min_notional,
-            max_leverage=max_leverage,
-        )
-        logger.debug("Regles de marche pour {} : {}", pair, rules)
-        return rules
+        return await self._rate_limiter.execute(_do_fetch)
 
     async def place_order(
         self,
@@ -324,19 +340,92 @@ class CcxtConnector(BaseExchangeConnector):
         price: Decimal | None = None,
     ) -> OrderInfo:
         """Stub — implemente dans Story 4.1."""
+        # TODO Story 4.1: utiliser OrderPriority.CRITICAL pour SL, HIGH pour TP
         raise NotImplementedError("Implemente dans Story 4.1")
 
     async def cancel_order(self, order_id: str) -> None:
         """Stub — implemente dans Story 4.1."""
+        # TODO Story 4.1: utiliser OrderPriority.CRITICAL pour SL, HIGH pour TP
         raise NotImplementedError("Implemente dans Story 4.1")
 
     async def fetch_balance(self) -> Balance:
-        """Stub — implemente dans Story 2.3."""
-        raise NotImplementedError("Implemente dans Story 2.3")
+        """Recupere la balance du compte depuis l'exchange."""
+
+        async def _do_fetch() -> Balance:
+            result = await self._exchange.fetch_balance()
+            usdt = result["USDT"]
+            balance = Balance(
+                total=Decimal(str(usdt["total"])),
+                free=Decimal(str(usdt["free"])),
+                used=Decimal(str(usdt["used"])),
+                currency="USDT",
+            )
+            logger.info(
+                "Balance recuperee: {} USDT disponible sur {} USDT total",
+                balance.free,
+                balance.total,
+            )
+            return balance
+
+        try:
+            return await self._rate_limiter.execute(_do_fetch)
+        except ccxt.NetworkError as exc:
+            logger.error("Erreur reseau lors de fetch_balance sur {} : {}", self._exchange_name, exc)
+            raise ExchangeConnectionError(
+                f"Erreur reseau lors de fetch_balance sur {self._exchange_name} : {exc}",
+                context={"exchange": self._exchange_name, "error": str(exc)},
+            ) from exc
+        except ccxt.AuthenticationError as exc:
+            logger.error("Erreur d'authentification lors de fetch_balance sur {} : {}", self._exchange_name, exc)
+            raise ExchangeError(
+                f"Erreur d'authentification lors de fetch_balance sur {self._exchange_name} : {exc}",
+                context={"exchange": self._exchange_name, "error": str(exc)},
+            ) from exc
+        except ccxt.BaseError as exc:
+            logger.error("Erreur exchange lors de fetch_balance sur {} : {}", self._exchange_name, exc)
+            raise ExchangeError(
+                f"Erreur exchange lors de fetch_balance sur {self._exchange_name} : {exc}",
+                context={"exchange": self._exchange_name, "error": str(exc)},
+            ) from exc
+
+    async def check_balance(self, min_required: Decimal) -> Balance:
+        """Verifie que la balance libre est suffisante pour trader."""
+        balance = await self.fetch_balance()
+
+        if balance.free < min_required:
+            logger.error(
+                "Balance insuffisante: {} USDT disponible, {} USDT requis",
+                balance.free,
+                min_required,
+            )
+            await self._event_bus.emit(
+                EventType.ERROR_CRITICAL,
+                ErrorEvent(
+                    event_type=EventType.ERROR_CRITICAL,
+                    error_type="InsufficientBalance",
+                    message=f"Balance insuffisante: {balance.free} USDT disponible, {min_required} USDT requis",
+                ),
+            )
+            raise InsufficientBalanceError(
+                f"Balance insuffisante: {balance.free} USDT disponible, {min_required} USDT requis",
+                context={
+                    "free": str(balance.free),
+                    "required": str(min_required),
+                    "currency": balance.currency,
+                },
+            )
+
+        logger.info(
+            "Balance suffisante: {} USDT >= {} USDT",
+            balance.free,
+            min_required,
+        )
+        return balance
 
     async def fetch_positions(self) -> list[dict[str, Any]]:
         """Recupere les positions ouvertes sur l'exchange."""
-        try:
+
+        async def _do_fetch() -> list[dict[str, Any]]:
             positions = await self._exchange.fetch_positions([self._pair])
             open_positions = [p for p in positions if p.get("contracts", 0) > 0]
             logger.info(
@@ -346,6 +435,9 @@ class CcxtConnector(BaseExchangeConnector):
                 self._pair,
             )
             return open_positions
+
+        try:
+            return await self._rate_limiter.execute(_do_fetch)
         except ccxt.NetworkError as exc:
             logger.error("Erreur reseau lors de fetch_positions sur {} : {}", self._exchange_name, exc)
             raise ExchangeConnectionError(
@@ -380,7 +472,10 @@ class CcxtConnector(BaseExchangeConnector):
             return
 
         try:
-            open_orders = await self._exchange.fetch_open_orders(self._pair)
+            async def _do_fetch_orders() -> list:
+                return await self._exchange.fetch_open_orders(self._pair)
+
+            open_orders = await self._rate_limiter.execute(_do_fetch_orders)
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.BaseError) as exc:
             logger.error("Impossible de recuperer les ordres ouverts : {}", exc)
             await self._event_bus.emit(

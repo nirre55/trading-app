@@ -9,10 +9,15 @@ import pytest
 from pydantic import SecretStr
 
 from src.core.event_bus import EventBus
-from src.core.exceptions import ExchangeConnectionError, ExchangeError
+from src.core.exceptions import (
+    ExchangeConnectionError,
+    ExchangeError,
+    InsufficientBalanceError,
+)
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import ExchangeConfig
 from src.models.events import EventType
+from src.models.exchange import Balance
 
 
 @pytest.fixture
@@ -600,18 +605,6 @@ class TestCcxtConnectorStubs:
         with pytest.raises(NotImplementedError):
             await connector.cancel_order("order-123")
 
-    @pytest.mark.asyncio
-    async def test_fetch_balance_raises_not_implemented(
-        self,
-        exchange_config: ExchangeConfig,
-        event_bus: EventBus,
-    ) -> None:
-        """fetch_balance() leve NotImplementedError."""
-        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
-        with pytest.raises(NotImplementedError):
-            await connector.fetch_balance()
-
-
 class TestCcxtConnectorReconnect:
     """Tests de la logique d'auto-reconnexion."""
 
@@ -1109,4 +1102,203 @@ class TestCcxtConnectorAuthReconnect:
 
         assert len(critical_events) == 1
         assert "authentification" in critical_events[0].message.lower() or "authentication" in critical_events[0].message.lower()
+
+
+class TestCcxtConnectorFetchBalance:
+    """Tests de fetch_balance()."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_balance_returns_balance_model(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """fetch_balance() retourne un objet Balance valide."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(return_value={
+            "USDT": {"total": 10000.0, "free": 8500.0, "used": 1500.0},
+        })
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        balance = await connector.fetch_balance()
+
+        assert isinstance(balance, Balance)
+        assert balance.total == Decimal("10000.0")
+        assert balance.free == Decimal("8500.0")
+        assert balance.used == Decimal("1500.0")
+        assert balance.currency == "USDT"
+
+    @pytest.mark.asyncio
+    async def test_fetch_balance_handles_network_error(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """ccxt.NetworkError est converti en ExchangeConnectionError."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(
+            side_effect=ccxt.NetworkError("connection lost"),
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        with pytest.raises(ExchangeConnectionError, match="fetch_balance"):
+            await connector.fetch_balance()
+
+    @pytest.mark.asyncio
+    async def test_fetch_balance_handles_exchange_error(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """ccxt.BaseError est converti en ExchangeError."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(
+            side_effect=ccxt.BaseError("exchange error"),
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        with pytest.raises(ExchangeError, match="fetch_balance"):
+            await connector.fetch_balance()
+
+
+class TestCcxtConnectorCheckBalance:
+    """Tests de check_balance()."""
+
+    @pytest.mark.asyncio
+    async def test_check_balance_sufficient_returns_balance(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Balance suffisante retourne l'objet Balance."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(return_value={
+            "USDT": {"total": 10000.0, "free": 8500.0, "used": 1500.0},
+        })
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        balance = await connector.check_balance(Decimal("100"))
+
+        assert isinstance(balance, Balance)
+        assert balance.free == Decimal("8500.0")
+
+    @pytest.mark.asyncio
+    async def test_check_balance_insufficient_emits_critical(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Balance insuffisante emet ERROR_CRITICAL sur le bus."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(return_value={
+            "USDT": {"total": 50.0, "free": 10.0, "used": 40.0},
+        })
+
+        critical_events: list = []
+
+        async def handler(event):
+            critical_events.append(event)
+
+        event_bus.on(EventType.ERROR_CRITICAL, handler)
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        with pytest.raises(InsufficientBalanceError):
+            await connector.check_balance(Decimal("100"))
+
+        assert len(critical_events) == 1
+        assert "insuffisante" in critical_events[0].message.lower()
+
+    @pytest.mark.asyncio
+    async def test_check_balance_insufficient_raises_error(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Balance insuffisante leve InsufficientBalanceError."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(return_value={
+            "USDT": {"total": 50.0, "free": 10.0, "used": 40.0},
+        })
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        with pytest.raises(InsufficientBalanceError, match="insuffisante"):
+            await connector.check_balance(Decimal("100"))
+
+
+class TestCcxtConnectorRateLimiterIntegration:
+    """Tests d'integration rate limiter + connector."""
+
+    @pytest.mark.asyncio
+    async def test_connector_fetch_balance_uses_rate_limiter(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """fetch_balance() passe par le rate limiter."""
+        mock_ccxt_exchange.fetch_balance = AsyncMock(return_value={
+            "USDT": {"total": 10000.0, "free": 8500.0, "used": 1500.0},
+        })
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        original_execute = connector._rate_limiter.execute
+        execute_called = False
+
+        async def spy_execute(*args, **kwargs):
+            nonlocal execute_called
+            execute_called = True
+            return await original_execute(*args, **kwargs)
+
+        connector._rate_limiter.execute = spy_execute
+
+        await connector.fetch_balance()
+        assert execute_called
+
+    @pytest.mark.asyncio
+    async def test_connector_fetch_positions_uses_rate_limiter(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """fetch_positions() passe par le rate limiter."""
+        mock_ccxt_exchange.fetch_positions = AsyncMock(return_value=[])
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        original_execute = connector._rate_limiter.execute
+        execute_called = False
+
+        async def spy_execute(*args, **kwargs):
+            nonlocal execute_called
+            execute_called = True
+            return await original_execute(*args, **kwargs)
+
+        connector._rate_limiter.execute = spy_execute
+
+        await connector.fetch_positions()
+        assert execute_called
 
