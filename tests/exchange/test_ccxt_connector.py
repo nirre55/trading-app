@@ -1243,6 +1243,53 @@ class TestCcxtConnectorCheckBalance:
             await connector.check_balance(Decimal("100"))
 
 
+class TestCcxtConnectorOrderValidator:
+    """Tests d'integration OrderValidator + CcxtConnector."""
+
+    @pytest.mark.asyncio
+    async def test_connector_initializes_order_validator_on_connect(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Apres connect(), order_validator est initialise avec les market_rules."""
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        await connector.connect()
+
+        assert connector.order_validator is not None
+        # Verifie que le validateur utilise les bonnes market_rules
+        result = connector.order_validator.round_quantity(Decimal("1.2345"))
+        assert result == Decimal("1.234")
+
+    @pytest.mark.asyncio
+    async def test_connector_order_validator_none_before_connect(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+    ) -> None:
+        """Avant connect(), order_validator est None."""
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        assert connector.order_validator is None
+
+    @pytest.mark.asyncio
+    async def test_connector_disconnect_resets_order_validator(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Apres disconnect(), order_validator est remis a None."""
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        await connector.connect()
+        assert connector.order_validator is not None
+
+        await connector.disconnect()
+        assert connector.order_validator is None
+
+
 class TestCcxtConnectorRateLimiterIntegration:
     """Tests d'integration rate limiter + connector."""
 

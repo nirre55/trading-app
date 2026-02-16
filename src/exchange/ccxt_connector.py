@@ -14,6 +14,7 @@ from src.core.exceptions import (
     InsufficientBalanceError,
 )
 from src.exchange.base import BaseExchangeConnector
+from src.exchange.order_validator import OrderValidator
 from src.exchange.rate_limiter import RateLimitConfig, RateLimiter
 from src.models.config import ExchangeConfig
 from src.models.events import CandleEvent, ErrorEvent, EventType, ExchangeEvent
@@ -42,6 +43,12 @@ class CcxtConnector(BaseExchangeConnector):
         self._reconnect_attempts: int = 0
         self._is_connected: bool = False
         self._rate_limiter: RateLimiter = RateLimiter(RateLimitConfig())
+        self._order_validator: OrderValidator | None = None
+
+    @property
+    def order_validator(self) -> OrderValidator | None:
+        """Validateur d'ordres, disponible apres connect()."""
+        return self._order_validator
 
     async def connect(self) -> None:
         """Connecte a l'exchange via CCXT Pro, charge les marches et les regles."""
@@ -75,6 +82,16 @@ class CcxtConnector(BaseExchangeConnector):
                 "Regles de marche chargees pour {} : {}",
                 self._pair,
                 self._market_rules,
+            )
+
+            self._order_validator = OrderValidator(self._market_rules)
+            logger.info(
+                "Validateur d'ordres initialise pour {} (step={}, tick={}, min_notional={}, max_leverage={})",
+                self._pair,
+                self._market_rules.step_size,
+                self._market_rules.tick_size,
+                self._market_rules.min_notional,
+                self._market_rules.max_leverage,
             )
 
             self._is_connected = True
@@ -124,6 +141,7 @@ class CcxtConnector(BaseExchangeConnector):
             logger.info("Deconnexion de {} en cours...", self._exchange_name)
             await self._exchange.close()
             self._exchange = None
+            self._order_validator = None
             logger.info("Deconnecte de {}", self._exchange_name)
 
             await self._event_bus.emit(
