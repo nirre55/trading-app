@@ -31,6 +31,17 @@ def exchange_config() -> ExchangeConfig:
 
 
 @pytest.fixture
+def exchange_config_with_password() -> ExchangeConfig:
+    return ExchangeConfig(
+        name="binance",
+        api_key=SecretStr("test_api_key_123"),
+        api_secret=SecretStr("test_api_secret_456"),
+        password=SecretStr("test_passphrase"),
+        testnet=True,
+    )
+
+
+@pytest.fixture
 def exchange_config_no_testnet() -> ExchangeConfig:
     return ExchangeConfig(
         name="binance",
@@ -261,6 +272,39 @@ class TestCcxtConnectorConnect:
 
         with pytest.raises(ExchangeError, match="binance"):
             await connector.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_with_password_passes_to_ccxt(
+        self,
+        exchange_config_with_password: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand password est fourni, CCXT recoit le champ 'password'."""
+        connector = CcxtConnector(exchange_config_with_password, event_bus, "BTC/USDT", "1m")
+        await connector.connect()
+
+        exchange_class = getattr(mock_ccxt_pro, "binance")
+        call_kwargs = exchange_class.call_args[0][0]
+        assert "password" in call_kwargs
+        assert call_kwargs["password"] == "test_passphrase"
+
+    @pytest.mark.asyncio
+    async def test_connect_without_password_no_password_key(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand password est None, CCXT ne recoit PAS de cle 'password'."""
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        await connector.connect()
+
+        exchange_class = getattr(mock_ccxt_pro, "binance")
+        call_kwargs = exchange_class.call_args[0][0]
+        assert "password" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_connect_double_call_disconnects_first(
@@ -564,8 +608,146 @@ class TestCcxtConnectorFetchMarketRules:
         mock_ccxt_exchange,
         mock_ccxt_pro,
     ) -> None:
-        """max_leverage None est converti en 1."""
+        """max_leverage None est converti en 1 quand aucune API de fallback."""
         mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]["max"] = None
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        rules = await connector.fetch_market_rules("BTC/USDT")
+        assert rules.max_leverage == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_leverage_none_fallback_api(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand max_leverage=None dans markets ET fetch_leverage_tiers reussit → utilise la valeur API."""
+        mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]["max"] = None
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            return_value={"BTC/USDT": [{"maxLeverage": 75}]}
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            side_effect=Exception("should not be called")
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        rules = await connector.fetch_market_rules("BTC/USDT")
+        assert rules.max_leverage == 75
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_leverage_none_fallback_market_leverage_tiers(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand fetch_leverage_tiers echoue mais fetch_market_leverage_tiers reussit → utilise la valeur."""
+        mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]["max"] = None
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            return_value=[{"maxLeverage": 125}]
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        rules = await connector.fetch_market_rules("BTC/USDT")
+        assert rules.max_leverage == 125
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_leverage_none_no_api_fallback_1(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand max_leverage=None ET les deux APIs echouent → fallback a 1."""
+        mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]["max"] = None
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        rules = await connector.fetch_market_rules("BTC/USDT")
+        assert rules.max_leverage == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_leverage_tiers_empty_list(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand fetch_leverage_tiers retourne une liste vide pour la paire → fallback a 1."""
+        mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]["max"] = None
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            return_value={"BTC/USDT": []}
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            return_value=[]
+        )
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        rules = await connector.fetch_market_rules("BTC/USDT")
+        assert rules.max_leverage == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_precision_missing_raises_error(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand precision.amount ou precision.price est None → ExchangeError."""
+        mock_ccxt_exchange.markets["BTC/USDT"]["precision"] = {"amount": None, "price": 0.01}
+
+        connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
+        connector._exchange = mock_ccxt_exchange
+
+        with pytest.raises(ExchangeError, match="precision"):
+            await connector.fetch_market_rules("BTC/USDT")
+
+    @pytest.mark.asyncio
+    async def test_fetch_market_rules_leverage_key_missing(
+        self,
+        exchange_config: ExchangeConfig,
+        event_bus: EventBus,
+        mock_ccxt_exchange,
+        mock_ccxt_pro,
+    ) -> None:
+        """Quand la cle 'leverage' est absente de limits → meme comportement que None."""
+        del mock_ccxt_exchange.markets["BTC/USDT"]["limits"]["leverage"]
+        mock_ccxt_exchange.fetch_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
+        mock_ccxt_exchange.fetch_market_leverage_tiers = AsyncMock(
+            side_effect=ccxt.BaseError("not supported")
+        )
 
         connector = CcxtConnector(exchange_config, event_bus, "BTC/USDT", "1m")
         connector._exchange = mock_ccxt_exchange

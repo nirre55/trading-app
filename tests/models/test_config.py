@@ -80,6 +80,25 @@ class TestExchangeConfig:
         with pytest.raises(ValidationError):
             ExchangeConfig(name="binance", api_key="key")  # type: ignore
 
+    def test_exchange_config_password_optionnel(self):
+        """ExchangeConfig sans password → password is None."""
+        config = ExchangeConfig(**_valid_exchange_config())
+        assert config.password is None
+
+    def test_exchange_config_password_secret_str(self):
+        """ExchangeConfig avec password → type SecretStr, masqué en repr()."""
+        data = {**_valid_exchange_config(), "password": "test_passphrase"}
+        config = ExchangeConfig(**data)
+        assert isinstance(config.password, SecretStr)
+        assert "test_passphrase" not in repr(config)
+
+    def test_exchange_config_password_get_secret_value(self):
+        """password.get_secret_value() retourne la valeur."""
+        data = {**_valid_exchange_config(), "password": "test_passphrase"}
+        config = ExchangeConfig(**data)
+        assert config.password is not None
+        assert config.password.get_secret_value() == "test_passphrase"
+
 
 class TestPathsConfig:
     """Tests pour PathsConfig."""
@@ -170,7 +189,7 @@ class TestStrategyConfig:
 
     def test_champ_manquant_raise_validation_error(self):
         with pytest.raises(ValidationError):
-            StrategyConfig(name="test", pair="BTC/USDT")  # type: ignore
+            StrategyConfig(name="test", pair="BTC/USDT")  # type: ignore    
 
     def test_type_invalide_leverage_raise_validation_error(self):
         data = _valid_strategy_config_dict()

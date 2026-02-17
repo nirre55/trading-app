@@ -58,16 +58,18 @@ class CcxtConnector(BaseExchangeConnector):
 
         try:
             exchange_class = getattr(ccxt.pro, self._exchange_name)
-            self._exchange = exchange_class(
-                {
-                    "apiKey": self._exchange_config.api_key.get_secret_value(),
-                    "secret": self._exchange_config.api_secret.get_secret_value(),
-                    "enableRateLimit": True,
-                    "options": {
-                        "defaultType": "future",
-                    },
-                }
-            )
+            credentials: dict[str, Any] = {
+                "apiKey": self._exchange_config.api_key.get_secret_value(),
+                "secret": self._exchange_config.api_secret.get_secret_value(),
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "future",
+                },
+            }
+            if self._exchange_config.password is not None:
+                credentials["password"] = self._exchange_config.password.get_secret_value()
+                logger.debug("Password fourni pour {}", self._exchange_name)
+            self._exchange = exchange_class(credentials)
 
             if self._exchange_config.testnet:
                 self._exchange.set_sandbox_mode(True)
@@ -313,6 +315,53 @@ class CcxtConnector(BaseExchangeConnector):
             context={"exchange": self._exchange_name, "attempts": MAX_RECONNECT_ATTEMPTS},
         )
 
+    async def _fetch_leverage_from_api(self, pair: str) -> int | None:
+        """Tente de recuperer le max_leverage via fetch_leverage_tiers ou fetch_market_leverage_tiers."""
+        # Tentative 1 : fetch_leverage_tiers (Binance, OKX, Bybit)
+        try:
+            async def _do_fetch_leverage() -> int | None:
+                tiers = await self._exchange.fetch_leverage_tiers([pair])
+                if pair in tiers and tiers[pair]:
+                    max_lev = max(
+                        (int(tier.get("maxLeverage", 0)) for tier in tiers[pair]),
+                        default=0,
+                    )
+                    if max_lev > 0:
+                        return max_lev
+                return None
+
+            return await self._rate_limiter.execute(_do_fetch_leverage)
+        except (ccxt.BaseError, AttributeError, ValueError) as exc:
+            logger.warning(
+                "fetch_leverage_tiers non disponible pour {} sur {} : {}",
+                pair,
+                self._exchange_name,
+                exc,
+            )
+
+        # Tentative 2 : fetch_market_leverage_tiers (Bitget, Kucoin)
+        try:
+            async def _do_fetch_market_leverage() -> int | None:
+                tiers = await self._exchange.fetch_market_leverage_tiers(pair)
+                if tiers:
+                    max_lev = max(
+                        (int(tier.get("maxLeverage", 0)) for tier in tiers),
+                        default=0,
+                    )
+                    if max_lev > 0:
+                        return max_lev
+                return None
+
+            return await self._rate_limiter.execute(_do_fetch_market_leverage)
+        except (ccxt.BaseError, AttributeError, ValueError) as exc:
+            logger.warning(
+                "Echec fetch_market_leverage_tiers pour {} sur {} : {}",
+                pair,
+                self._exchange_name,
+                exc,
+            )
+            return None
+
     async def fetch_market_rules(self, pair: str) -> MarketRules:
         """Recupere les regles de marche pour une paire depuis l'exchange."""
 
@@ -326,18 +375,41 @@ class CcxtConnector(BaseExchangeConnector):
 
             market = self._exchange.markets[pair]
 
-            step_size = Decimal(str(market["precision"]["amount"]))
-            tick_size = Decimal(str(market["precision"]["price"]))
+            precision = market.get("precision", {})
+            raw_step = precision.get("amount") if isinstance(precision, dict) else None
+            raw_tick = precision.get("price") if isinstance(precision, dict) else None
+
+            if raw_step is None or raw_tick is None:
+                logger.error(
+                    "Donnees de precision manquantes pour {} sur {} (amount={}, price={})",
+                    pair, self._exchange_name, raw_step, raw_tick,
+                )
+                raise ExchangeError(
+                    f"Donnees de precision manquantes pour {pair} sur {self._exchange_name}",
+                    context={"pair": pair, "exchange": self._exchange_name},
+                )
+
+            step_size = Decimal(str(raw_step))
+            tick_size = Decimal(str(raw_tick))
             min_notional = (
                 Decimal(str(market["limits"]["cost"]["min"]))
-                if market["limits"]["cost"]["min"] is not None
+                if market.get("limits", {}).get("cost", {}).get("min") is not None
                 else Decimal("0")
             )
-            max_leverage = (
-                int(market["limits"]["leverage"]["max"])
-                if market["limits"]["leverage"]["max"] is not None
-                else 1
-            )
+
+            leverage_data = market.get("limits", {}).get("leverage", {})
+            raw_max_leverage = leverage_data.get("max") if isinstance(leverage_data, dict) else None
+
+            if raw_max_leverage is not None:
+                max_leverage = int(raw_max_leverage)
+                logger.info("max_leverage={} pour {} (source: markets)", max_leverage, pair)
+            else:
+                max_leverage = await self._fetch_leverage_from_api(pair)
+                if max_leverage is not None:
+                    logger.info("max_leverage={} pour {} (source: fetch_leverage_tiers)", max_leverage, pair)
+                else:
+                    max_leverage = 1
+                    logger.info("max_leverage=1 pour {} (source: fallback)", pair)
 
             rules = MarketRules(
                 step_size=step_size,

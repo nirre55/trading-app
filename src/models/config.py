@@ -13,6 +13,7 @@ class ExchangeConfig(BaseModel):
     name: str
     api_key: SecretStr
     api_secret: SecretStr
+    password: SecretStr | None = None
     testnet: bool = True
 
 

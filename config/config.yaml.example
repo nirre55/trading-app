@@ -3,6 +3,7 @@ exchange:
   name: "binance"           # Nom de l'exchange (supporté par CCXT)
   api_key: "YOUR_API_KEY"   # Clé API — NE PAS COMMITER
   api_secret: "YOUR_SECRET" # Secret API — NE PAS COMMITER
+  # password: "YOUR_PASSPHRASE"  # Passphrase/password — requis par Bitget, Kucoin, OKX (optionnel pour Binance)
   testnet: true             # Utiliser le testnet (recommandé pour les tests)
 
 paths:

@@ -21,3 +21,7 @@ data/*
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Tests manuel par Mehdi
+test_manuel.txt
+testa.py
