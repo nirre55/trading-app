@@ -1,17 +1,18 @@
 """Tests unitaires pour TradeExecutor — séquence atomique et invariant SL (NFR10)."""
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.capital.base import BaseCapitalManager
 from src.core.event_bus import EventBus
 from src.core.exceptions import OrderFailedError, TradeError
 from src.exchange.base import BaseExchangeConnector
 from src.models.config import CapitalConfig, StrategyConfig
-from src.models.events import EventType
-from src.models.exchange import MarketRules, OrderInfo, OrderSide, OrderStatus, OrderType
-from src.models.trade import TradeDirection, TradeStatus
+from src.models.events import EventType, StrategyEvent
+from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, OrderStatus, OrderType
+from src.models.trade import TradeDirection, TradeRecord, TradeStatus
 from src.trading.trade_executor import TradeExecutor
 
 
@@ -36,6 +37,12 @@ def make_order(
         quantity=quantity,
         status=status,
     )
+
+
+def make_balance(free: str = "1000", used: str = "0") -> Balance:
+    free_d = Decimal(free)
+    used_d = Decimal(used)
+    return Balance(total=free_d + used_d, free=free_d, used=used_d)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -86,12 +93,32 @@ def mock_connector() -> MagicMock:
         ]
     )
     connector.fetch_positions = AsyncMock(return_value=[])
+    connector.fetch_balance = AsyncMock(return_value=make_balance(free="10000"))
     return connector
 
 
 @pytest.fixture
-def executor(mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig) -> TradeExecutor:
-    return TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+def mock_capital_manager() -> MagicMock:
+    """6.1 : Mock de BaseCapitalManager retournant Decimal('0.01')."""
+    manager = MagicMock(spec=BaseCapitalManager)
+    manager.calculate_position_size.return_value = Decimal("0.01")
+    return manager
+
+
+@pytest.fixture
+def executor(
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
+) -> TradeExecutor:
+    """6.2 : Fixture executor avec capital_manager injecté."""
+    return TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
 
 
 # ── Paramètres communs ────────────────────────────────────────────────────────
@@ -392,11 +419,17 @@ async def test_nfr10_all_trades_have_sl_or_are_closed(
     mock_connector: MagicMock,
     event_bus: EventBus,
     mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
     side_effects: list,
     expected_calls: int,
 ) -> None:
     """NFR10 : 100% des trades ont SL actif OU position fermée — 0% non protégés."""
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
     mock_connector.place_order = AsyncMock(side_effect=side_effects)
 
     result = await executor.execute_atomic_trade(**COMMON_PARAMS)
@@ -412,10 +445,18 @@ async def test_nfr10_all_trades_have_sl_or_are_closed(
 
 @pytest.mark.asyncio
 async def test_stop_unsubscribes_from_bus(
-    mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
 ) -> None:
     """Appeler stop() retire les handlers — les signaux suivants ne sont plus traités."""
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
 
     # Vérifier que les handlers sont bien enregistrés avant stop()
     assert event_bus.has_handlers(EventType.STRATEGY_SIGNAL_LONG)
@@ -426,6 +467,8 @@ async def test_stop_unsubscribes_from_bus(
     # Après stop(), les handlers doivent être retirés
     assert not event_bus.has_handlers(EventType.STRATEGY_SIGNAL_LONG)
     assert not event_bus.has_handlers(EventType.STRATEGY_SIGNAL_SHORT)
+    assert not event_bus.has_handlers(EventType.TRADE_SL_HIT)
+    assert not event_bus.has_handlers(EventType.TRADE_TP_HIT)
 
 
 # ── Tests direction SHORT ─────────────────────────────────────────────────────
@@ -433,10 +476,18 @@ async def test_stop_unsubscribes_from_bus(
 
 @pytest.mark.asyncio
 async def test_atomic_trade_short_success_uses_sell_entry(
-    mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
 ) -> None:
     """H2 : direction SHORT → ordre d'entrée SELL et SL côté BUY."""
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
     mock_connector.place_order = AsyncMock(
         side_effect=[
             make_order(side=OrderSide.SELL, status=OrderStatus.FILLED, price=Decimal("50000")),
@@ -466,10 +517,18 @@ async def test_atomic_trade_short_success_uses_sell_entry(
 
 @pytest.mark.asyncio
 async def test_atomic_trade_short_sl_failure_closes_with_buy(
-    mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
 ) -> None:
     """H2 : direction SHORT + SL exception → fermeture via ordre BUY (close_side inverse)."""
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
     mock_connector.place_order = AsyncMock(
         side_effect=[
             make_order(side=OrderSide.SELL, status=OrderStatus.FILLED),  # entry SELL
@@ -646,7 +705,9 @@ async def test_execute_atomic_trade_calls_set_leverage(
 
 @pytest.mark.asyncio
 async def test_execute_atomic_trade_leverage_capped_at_max(
-    mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_capital_manager: MagicMock,
 ) -> None:
     """AC4 : config.leverage=15 > market_rules.max_leverage=10 → set_leverage(pair, 10)."""
     config_high_leverage = StrategyConfig(
@@ -659,7 +720,12 @@ async def test_execute_atomic_trade_leverage_capped_at_max(
         timeout_candles=10,
         capital=CapitalConfig(mode="fixed_percent", risk_percent=1.0, risk_reward_ratio=2.0),
     )
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=config_high_leverage)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=config_high_leverage,
+        capital_manager=mock_capital_manager,
+    )
     await executor.execute_atomic_trade(**COMMON_PARAMS)
 
     # effective_leverage = min(15, 10) = 10
@@ -725,14 +791,301 @@ async def test_execute_atomic_trade_tp_failure_keeps_position_open(
 
 @pytest.mark.asyncio
 async def test_execute_atomic_trade_market_rules_none_raises(
-    mock_connector: MagicMock, event_bus: EventBus, mock_config: StrategyConfig
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+    mock_config: StrategyConfig,
+    mock_capital_manager: MagicMock,
 ) -> None:
     """market_rules=None → TradeError avant tout appel réseau."""
     mock_connector.market_rules = None   # override : pas encore chargées
-    executor = TradeExecutor(connector=mock_connector, event_bus=event_bus, config=mock_config)
+    executor = TradeExecutor(
+        connector=mock_connector,
+        event_bus=event_bus,
+        config=mock_config,
+        capital_manager=mock_capital_manager,
+    )
 
     with pytest.raises(TradeError, match="market_rules non chargées"):
         await executor.execute_atomic_trade(**COMMON_PARAMS)
 
     mock_connector.set_leverage.assert_not_called()
     mock_connector.place_order.assert_not_called()
+
+
+# ── Tests Story 4.3 — Signal handlers (AC4, AC7) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_handle_signal_long_calls_fetch_balance_and_position_size(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    mock_capital_manager: MagicMock,
+) -> None:
+    """6.3 : _handle_signal_long → fetch_balance() + calculate_position_size() appelés."""
+    event = StrategyEvent(
+        event_type=EventType.STRATEGY_SIGNAL_LONG,
+        strategy_name="test",
+        pair="BTC/USDT",
+        signal_price=Decimal("50000"),
+        sl_price=Decimal("49000"),
+    )
+    await executor._handle_signal_long(event)  # type: ignore[arg-type]
+
+    mock_connector.fetch_balance.assert_called_once()
+    mock_capital_manager.calculate_position_size.assert_called_once_with(
+        balance=Decimal("10000"),  # make_balance free=10000
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_signal_long_calls_execute_atomic_trade_with_correct_args(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    mock_capital_manager: MagicMock,
+) -> None:
+    """6.3 : _handle_signal_long → execute_atomic_trade() avec capital_before, quantity, direction exacts."""
+    mock_capital_manager.calculate_position_size.return_value = Decimal("0.01")
+    event = StrategyEvent(
+        event_type=EventType.STRATEGY_SIGNAL_LONG,
+        strategy_name="test",
+        pair="BTC/USDT",
+        signal_price=Decimal("50000"),
+        sl_price=Decimal("49000"),
+    )
+
+    with patch.object(executor, "execute_atomic_trade", new_callable=AsyncMock) as mock_eat:
+        mock_eat.return_value = None
+        await executor._handle_signal_long(event)  # type: ignore[arg-type]
+
+        mock_eat.assert_called_once_with(
+            pair="BTC/USDT",
+            direction=TradeDirection.LONG,
+            quantity=Decimal("0.01"),          # issu du capital_manager
+            signal_price=Decimal("50000"),
+            sl_price=Decimal("49000"),
+            capital_before=Decimal("10000"),   # issu de fetch_balance free=10000
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_signal_short_calls_execute_with_direction_short(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    mock_capital_manager: MagicMock,
+) -> None:
+    """6.4 : _handle_signal_short → execute_atomic_trade() avec direction=SHORT."""
+    mock_connector.place_order = AsyncMock(
+        side_effect=[
+            make_order(side=OrderSide.SELL, status=OrderStatus.FILLED, price=Decimal("50000")),
+            make_order(side=OrderSide.BUY, order_type=OrderType.STOP_LOSS, status=OrderStatus.PENDING),
+            make_order(side=OrderSide.BUY, order_type=OrderType.TAKE_PROFIT, status=OrderStatus.PENDING),
+        ]
+    )
+    event = StrategyEvent(
+        event_type=EventType.STRATEGY_SIGNAL_SHORT,
+        strategy_name="test",
+        pair="BTC/USDT",
+        signal_price=Decimal("50000"),
+        sl_price=Decimal("51000"),
+    )
+    await executor._handle_signal_short(event)  # type: ignore[arg-type]
+
+    # Vérifier que l'entrée est un SELL (direction SHORT)
+    entry_call = mock_connector.place_order.call_args_list[0]
+    assert entry_call.kwargs["side"] == OrderSide.SELL
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_sl_hit_pnl_positive(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """6.5 : _handle_trade_closed SL_HIT — capital_after > capital_before → pnl positif."""
+    from src.models.events import TradeEvent as TE
+
+    trade_id = "trade-abc"
+    # Injecter un trade ouvert dans le registre interne
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    # capital_after = 1050 > capital_before = 1000 → pnl = 50 (positif)
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="1050"))
+
+    closed_events: list = []
+
+    async def capture(event):  # type: ignore[no-untyped-def]
+        closed_events.append(event)
+
+    event_bus.on(EventType.TRADE_CLOSED, capture)
+
+    sl_event = TE(
+        event_type=EventType.TRADE_SL_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(sl_event)  # type: ignore[arg-type]
+
+    assert len(closed_events) == 1
+    assert closed_events[0].pnl == Decimal("50")  # 1050 - 1000
+    assert closed_events[0].pnl > 0
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_tp_hit_pnl_negative(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """6.6 : _handle_trade_closed TP_HIT — capital_after < capital_before → pnl négatif."""
+    from src.models.events import TradeEvent as TE
+
+    trade_id = "trade-xyz"
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    # capital_after = 980 < capital_before = 1000 → pnl = -20 (négatif)
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="980"))
+
+    closed_events: list = []
+
+    async def capture(event):  # type: ignore[no-untyped-def]
+        closed_events.append(event)
+
+    event_bus.on(EventType.TRADE_CLOSED, capture)
+
+    tp_event = TE(
+        event_type=EventType.TRADE_TP_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(tp_event)  # type: ignore[arg-type]
+
+    assert len(closed_events) == 1
+    assert closed_events[0].pnl == Decimal("-20")  # 980 - 1000
+    assert closed_events[0].pnl < 0
+
+
+@pytest.mark.asyncio
+async def test_handle_signal_long_ignores_missing_signal_price(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+) -> None:
+    """Guard signal_price=None → retour silencieux, aucun appel réseau."""
+    event = StrategyEvent(
+        event_type=EventType.STRATEGY_SIGNAL_LONG,
+        strategy_name="test",
+        pair="BTC/USDT",
+        signal_price=None,
+        sl_price=Decimal("49000"),
+    )
+    await executor._handle_signal_long(event)  # type: ignore[arg-type]
+
+    mock_connector.fetch_balance.assert_not_called()
+    mock_connector.place_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_signal_short_ignores_missing_sl_price(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+) -> None:
+    """Guard sl_price=None → retour silencieux, aucun appel réseau."""
+    event = StrategyEvent(
+        event_type=EventType.STRATEGY_SIGNAL_SHORT,
+        strategy_name="test",
+        pair="BTC/USDT",
+        signal_price=Decimal("50000"),
+        sl_price=None,
+    )
+    await executor._handle_signal_short(event)  # type: ignore[arg-type]
+
+    mock_connector.fetch_balance.assert_not_called()
+    mock_connector.place_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_unknown_trade_id_no_crash(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+) -> None:
+    """_handle_trade_closed avec trade_id inconnu → warning silencieux, aucun appel réseau."""
+    from src.models.events import TradeEvent as TE
+
+    unknown_event = TE(
+        event_type=EventType.TRADE_SL_HIT,
+        trade_id="unknown-trade-id-xyz",
+        pair="BTC/USDT",
+    )
+    # Ne doit pas lever d'exception
+    await executor._handle_trade_closed(unknown_event)  # type: ignore[arg-type]
+
+    mock_connector.fetch_balance.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_emits_capital_fields(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """AC6 : TRADE_CLOSED émet capital_before et capital_after non nuls et corrects."""
+    from src.models.events import TradeEvent as TE
+
+    trade_id = "trade-capital-check"
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="1020"))
+
+    closed_events: list = []
+
+    async def capture(event):  # type: ignore[no-untyped-def]
+        closed_events.append(event)
+
+    event_bus.on(EventType.TRADE_CLOSED, capture)
+
+    tp_event = TE(
+        event_type=EventType.TRADE_TP_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(tp_event)  # type: ignore[arg-type]
+
+    assert len(closed_events) == 1
+    assert closed_events[0].capital_before == Decimal("1000")
+    assert closed_events[0].capital_after == Decimal("1020")
+    assert closed_events[0].pnl == Decimal("20")
+    # Vérifier que TradeResult est stocké dans _closed_trades
+    assert trade_id in executor._closed_trades
+    assert executor._closed_trades[trade_id].capital_before == Decimal("1000")
+    assert executor._closed_trades[trade_id].capital_after == Decimal("1020")

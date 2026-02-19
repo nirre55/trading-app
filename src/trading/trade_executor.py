@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
 
+from src.capital.base import BaseCapitalManager
 from src.core.event_bus import EventBus
 from src.core.exceptions import OrderFailedError, TradeError
 from src.exchange.base import BaseExchangeConnector
@@ -15,7 +17,7 @@ from src.exchange.order_validator import OrderValidator
 from src.models.config import StrategyConfig
 from src.models.events import ErrorEvent, EventType, StrategyEvent, TradeEvent
 from src.models.exchange import OrderInfo, OrderSide, OrderStatus, OrderType
-from src.models.trade import TradeDirection, TradeRecord, TradeStatus
+from src.models.trade import TradeDirection, TradeRecord, TradeResult, TradeStatus
 
 __all__ = ["TradeExecutor"]
 
@@ -28,29 +30,168 @@ class TradeExecutor:
         connector: BaseExchangeConnector,
         event_bus: EventBus,
         config: StrategyConfig,
+        capital_manager: BaseCapitalManager,
     ) -> None:
         self._connector = connector
         self._event_bus = event_bus
         self._config = config
+        self._capital_manager = capital_manager
+        self._open_trades: dict[str, TradeRecord] = {}
+        self._closed_trades: dict[str, TradeResult] = {}
         self._handle_signal_long_bound = self._handle_signal_long
         self._handle_signal_short_bound = self._handle_signal_short
+        self._handle_sl_hit_bound = self._handle_trade_closed
+        self._handle_tp_hit_bound = self._handle_trade_closed
         self._event_bus.on(EventType.STRATEGY_SIGNAL_LONG, self._handle_signal_long_bound)  # type: ignore[arg-type]
         self._event_bus.on(EventType.STRATEGY_SIGNAL_SHORT, self._handle_signal_short_bound)  # type: ignore[arg-type]
-        logger.debug("TradeExecutor initialisé — abonné aux signaux LONG/SHORT")
+        self._event_bus.on(EventType.TRADE_SL_HIT, self._handle_sl_hit_bound)  # type: ignore[arg-type]
+        self._event_bus.on(EventType.TRADE_TP_HIT, self._handle_tp_hit_bound)  # type: ignore[arg-type]
+        logger.debug("TradeExecutor initialisé — abonné aux signaux LONG/SHORT et événements SL/TP")
 
     async def _handle_signal_long(self, event: StrategyEvent) -> None:  # type: ignore[arg-type]
-        """Gestionnaire signal long — sera complété en Story 4.3."""
+        """Gestionnaire signal LONG — calcul position sizing + exécution atomique (FR11, FR12, FR27)."""
         logger.info(
-            "Signal LONG reçu pour {} — intégration complète en Story 4.3",
+            "Signal LONG reçu — pair={} signal_price={} sl_price={}",
             event.pair,
+            event.signal_price,
+            event.sl_price,
         )
+        if event.signal_price is None or event.sl_price is None:
+            logger.warning(
+                "Signal LONG ignoré — signal_price ou sl_price manquant — pair={}",
+                event.pair,
+            )
+            return
+        try:
+            balance = await self._connector.fetch_balance()
+            capital_before = balance.free
+            quantity = self._capital_manager.calculate_position_size(
+                balance=capital_before,
+                entry_price=event.signal_price,
+                stop_loss=event.sl_price,
+            )
+            record = await self.execute_atomic_trade(
+                pair=event.pair,
+                direction=TradeDirection.LONG,
+                quantity=quantity,
+                signal_price=event.signal_price,
+                sl_price=event.sl_price,
+                capital_before=capital_before,
+            )
+            if record is not None:
+                self._open_trades[str(record.id)] = record
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Erreur traitement signal LONG — pair={} erreur={}", event.pair, exc
+            )
 
     async def _handle_signal_short(self, event: StrategyEvent) -> None:  # type: ignore[arg-type]
-        """Gestionnaire signal short — sera complété en Story 4.3."""
+        """Gestionnaire signal SHORT — calcul position sizing + exécution atomique (FR11, FR12, FR27)."""
         logger.info(
-            "Signal SHORT reçu pour {} — intégration complète en Story 4.3",
+            "Signal SHORT reçu — pair={} signal_price={} sl_price={}",
             event.pair,
+            event.signal_price,
+            event.sl_price,
         )
+        if event.signal_price is None or event.sl_price is None:
+            logger.warning(
+                "Signal SHORT ignoré — signal_price ou sl_price manquant — pair={}",
+                event.pair,
+            )
+            return
+        try:
+            balance = await self._connector.fetch_balance()
+            capital_before = balance.free
+            quantity = self._capital_manager.calculate_position_size(
+                balance=capital_before,
+                entry_price=event.signal_price,
+                stop_loss=event.sl_price,
+            )
+            record = await self.execute_atomic_trade(
+                pair=event.pair,
+                direction=TradeDirection.SHORT,
+                quantity=quantity,
+                signal_price=event.signal_price,
+                sl_price=event.sl_price,
+                capital_before=capital_before,
+            )
+            if record is not None:
+                self._open_trades[str(record.id)] = record
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Erreur traitement signal SHORT — pair={} erreur={}", event.pair, exc
+            )
+
+    async def _handle_trade_closed(self, event: TradeEvent) -> None:  # type: ignore[arg-type]
+        """Gère la clôture d'un trade (SL ou TP touché) — calcul P&L (FR28, FR29)."""
+        trade_id = event.trade_id
+        trade_record = self._open_trades.pop(trade_id, None)
+        if trade_record is None:
+            logger.warning("Trade clôturé inconnu — trade_id={}", trade_id)
+            return
+        try:
+            balance_after = await self._connector.fetch_balance()
+            capital_after = balance_after.free
+            pnl = capital_after - trade_record.capital_before
+            duration = datetime.now(timezone.utc) - trade_record.timestamp
+
+            if event.exit_price is not None:
+                exit_price = event.exit_price
+            elif event.event_type == EventType.TRADE_SL_HIT:
+                exit_price = trade_record.stop_loss
+            else:
+                exit_price = trade_record.take_profit
+
+            result = TradeResult(
+                trade_id=str(trade_record.id),
+                pair=trade_record.pair,
+                direction=trade_record.direction,
+                entry_price=trade_record.entry_price,
+                exit_price=exit_price,
+                stop_loss=trade_record.stop_loss,
+                take_profit=trade_record.take_profit,
+                leverage=trade_record.leverage,
+                pnl=pnl,
+                duration=duration,
+                capital_before=trade_record.capital_before,
+                capital_after=capital_after,
+            )
+
+            self._closed_trades[trade_id] = result
+
+            await self._event_bus.emit(
+                EventType.TRADE_CLOSED,
+                TradeEvent(
+                    event_type=EventType.TRADE_CLOSED,
+                    trade_id=trade_id,
+                    pair=trade_record.pair,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    capital_before=trade_record.capital_before,
+                    capital_after=capital_after,
+                    details=(
+                        f"capital_before={trade_record.capital_before} "
+                        f"capital_after={capital_after} pnl={pnl}"
+                    ),
+                ),
+            )
+            logger.info(
+                "Trade clôturé — trade_id={} pnl={} capital_before={} capital_after={}",
+                trade_id,
+                pnl,
+                trade_record.capital_before,
+                capital_after,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Erreur calcul P&L — trade_id={} erreur={}", trade_id, exc
+            )
 
     def _calculate_tp_sl(
         self,
@@ -300,6 +441,8 @@ class TradeExecutor:
         """Désabonne les handlers du bus pour graceful shutdown."""
         self._event_bus.off(EventType.STRATEGY_SIGNAL_LONG, self._handle_signal_long_bound)  # type: ignore[arg-type]
         self._event_bus.off(EventType.STRATEGY_SIGNAL_SHORT, self._handle_signal_short_bound)  # type: ignore[arg-type]
+        self._event_bus.off(EventType.TRADE_SL_HIT, self._handle_sl_hit_bound)  # type: ignore[arg-type]
+        self._event_bus.off(EventType.TRADE_TP_HIT, self._handle_tp_hit_bound)  # type: ignore[arg-type]
         logger.debug("TradeExecutor arrêté — handlers retirés du bus")
 
     async def _close_position_on_failure(

@@ -101,6 +101,8 @@ class StrategyEvent(BaseEvent):
     pair: str
     condition_index: int | None = None
     details: str | None = None
+    signal_price: Decimal | None = None
+    sl_price: Decimal | None = None
 
     @model_validator(mode="after")
     def check_domain(self) -> "StrategyEvent":
@@ -115,6 +117,10 @@ class TradeEvent(BaseEvent):
     trade_id: str
     pair: str
     details: str | None = None
+    exit_price: Decimal | None = None
+    pnl: Decimal | None = None
+    capital_before: Decimal | None = None
+    capital_after: Decimal | None = None
 
     @model_validator(mode="after")
     def check_domain(self) -> "TradeEvent":
