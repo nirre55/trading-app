@@ -18,6 +18,7 @@ from src.models.config import StrategyConfig
 from src.models.events import ErrorEvent, EventType, StrategyEvent, TradeEvent
 from src.models.exchange import OrderInfo, OrderSide, OrderStatus, OrderType
 from src.models.trade import TradeDirection, TradeRecord, TradeResult, TradeStatus
+from src.trading.trade_logger import TradeLogger
 
 __all__ = ["TradeExecutor"]
 
@@ -31,11 +32,13 @@ class TradeExecutor:
         event_bus: EventBus,
         config: StrategyConfig,
         capital_manager: BaseCapitalManager,
+        trade_logger: TradeLogger,
     ) -> None:
         self._connector = connector
         self._event_bus = event_bus
         self._config = config
         self._capital_manager = capital_manager
+        self._trade_logger = trade_logger
         self._open_trades: dict[str, TradeRecord] = {}
         self._closed_trades: dict[str, TradeResult] = {}
         self._handle_signal_long_bound = self._handle_signal_long
@@ -162,6 +165,7 @@ class TradeExecutor:
             )
 
             self._closed_trades[trade_id] = result
+            await self._trade_logger.log_trade(result)  # FR31 — flush immédiat NFR11
 
             await self._event_bus.emit(
                 EventType.TRADE_CLOSED,

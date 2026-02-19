@@ -10,10 +10,11 @@ from src.core.event_bus import EventBus
 from src.core.exceptions import OrderFailedError, TradeError
 from src.exchange.base import BaseExchangeConnector
 from src.models.config import CapitalConfig, StrategyConfig
-from src.models.events import EventType, StrategyEvent
+from src.models.events import EventType, StrategyEvent, TradeEvent
 from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, OrderStatus, OrderType
-from src.models.trade import TradeDirection, TradeRecord, TradeStatus
+from src.models.trade import TradeDirection, TradeRecord, TradeResult, TradeStatus
 from src.trading.trade_executor import TradeExecutor
+from src.trading.trade_logger import TradeLogger
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -106,18 +107,28 @@ def mock_capital_manager() -> MagicMock:
 
 
 @pytest.fixture
+def mock_trade_logger() -> MagicMock:
+    """4.1 : Mock de TradeLogger avec log_trade AsyncMock."""
+    mock = MagicMock(spec=TradeLogger)
+    mock.log_trade = AsyncMock()
+    return mock
+
+
+@pytest.fixture
 def executor(
     mock_connector: MagicMock,
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> TradeExecutor:
-    """6.2 : Fixture executor avec capital_manager injecté."""
+    """6.2 : Fixture executor avec capital_manager et trade_logger injectés."""
     return TradeExecutor(
         connector=mock_connector,
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
 
 
@@ -420,6 +431,7 @@ async def test_nfr10_all_trades_have_sl_or_are_closed(
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
     side_effects: list,
     expected_calls: int,
 ) -> None:
@@ -429,6 +441,7 @@ async def test_nfr10_all_trades_have_sl_or_are_closed(
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
     mock_connector.place_order = AsyncMock(side_effect=side_effects)
 
@@ -449,6 +462,7 @@ async def test_stop_unsubscribes_from_bus(
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> None:
     """Appeler stop() retire les handlers — les signaux suivants ne sont plus traités."""
     executor = TradeExecutor(
@@ -456,6 +470,7 @@ async def test_stop_unsubscribes_from_bus(
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
 
     # Vérifier que les handlers sont bien enregistrés avant stop()
@@ -480,6 +495,7 @@ async def test_atomic_trade_short_success_uses_sell_entry(
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> None:
     """H2 : direction SHORT → ordre d'entrée SELL et SL côté BUY."""
     executor = TradeExecutor(
@@ -487,6 +503,7 @@ async def test_atomic_trade_short_success_uses_sell_entry(
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
     mock_connector.place_order = AsyncMock(
         side_effect=[
@@ -521,6 +538,7 @@ async def test_atomic_trade_short_sl_failure_closes_with_buy(
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> None:
     """H2 : direction SHORT + SL exception → fermeture via ordre BUY (close_side inverse)."""
     executor = TradeExecutor(
@@ -528,6 +546,7 @@ async def test_atomic_trade_short_sl_failure_closes_with_buy(
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
     mock_connector.place_order = AsyncMock(
         side_effect=[
@@ -708,6 +727,7 @@ async def test_execute_atomic_trade_leverage_capped_at_max(
     mock_connector: MagicMock,
     event_bus: EventBus,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> None:
     """AC4 : config.leverage=15 > market_rules.max_leverage=10 → set_leverage(pair, 10)."""
     config_high_leverage = StrategyConfig(
@@ -725,6 +745,7 @@ async def test_execute_atomic_trade_leverage_capped_at_max(
         event_bus=event_bus,
         config=config_high_leverage,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
     await executor.execute_atomic_trade(**COMMON_PARAMS)
 
@@ -795,6 +816,7 @@ async def test_execute_atomic_trade_market_rules_none_raises(
     event_bus: EventBus,
     mock_config: StrategyConfig,
     mock_capital_manager: MagicMock,
+    mock_trade_logger: MagicMock,
 ) -> None:
     """market_rules=None → TradeError avant tout appel réseau."""
     mock_connector.market_rules = None   # override : pas encore chargées
@@ -803,6 +825,7 @@ async def test_execute_atomic_trade_market_rules_none_raises(
         event_bus=event_bus,
         config=mock_config,
         capital_manager=mock_capital_manager,
+        trade_logger=mock_trade_logger,
     )
 
     with pytest.raises(TradeError, match="market_rules non chargées"):
@@ -904,7 +927,6 @@ async def test_handle_trade_closed_sl_hit_pnl_positive(
     event_bus: EventBus,
 ) -> None:
     """6.5 : _handle_trade_closed SL_HIT — capital_after > capital_before → pnl positif."""
-    from src.models.events import TradeEvent as TE
 
     trade_id = "trade-abc"
     # Injecter un trade ouvert dans le registre interne
@@ -930,7 +952,7 @@ async def test_handle_trade_closed_sl_hit_pnl_positive(
 
     event_bus.on(EventType.TRADE_CLOSED, capture)
 
-    sl_event = TE(
+    sl_event = TradeEvent(
         event_type=EventType.TRADE_SL_HIT,
         trade_id=trade_id,
         pair="BTC/USDT",
@@ -949,7 +971,6 @@ async def test_handle_trade_closed_tp_hit_pnl_negative(
     event_bus: EventBus,
 ) -> None:
     """6.6 : _handle_trade_closed TP_HIT — capital_after < capital_before → pnl négatif."""
-    from src.models.events import TradeEvent as TE
 
     trade_id = "trade-xyz"
     executor._open_trades[trade_id] = TradeRecord(
@@ -974,7 +995,7 @@ async def test_handle_trade_closed_tp_hit_pnl_negative(
 
     event_bus.on(EventType.TRADE_CLOSED, capture)
 
-    tp_event = TE(
+    tp_event = TradeEvent(
         event_type=EventType.TRADE_TP_HIT,
         trade_id=trade_id,
         pair="BTC/USDT",
@@ -1030,9 +1051,8 @@ async def test_handle_trade_closed_unknown_trade_id_no_crash(
     mock_connector: MagicMock,
 ) -> None:
     """_handle_trade_closed avec trade_id inconnu → warning silencieux, aucun appel réseau."""
-    from src.models.events import TradeEvent as TE
 
-    unknown_event = TE(
+    unknown_event = TradeEvent(
         event_type=EventType.TRADE_SL_HIT,
         trade_id="unknown-trade-id-xyz",
         pair="BTC/USDT",
@@ -1050,7 +1070,6 @@ async def test_handle_trade_closed_emits_capital_fields(
     event_bus: EventBus,
 ) -> None:
     """AC6 : TRADE_CLOSED émet capital_before et capital_after non nuls et corrects."""
-    from src.models.events import TradeEvent as TE
 
     trade_id = "trade-capital-check"
     executor._open_trades[trade_id] = TradeRecord(
@@ -1074,7 +1093,7 @@ async def test_handle_trade_closed_emits_capital_fields(
 
     event_bus.on(EventType.TRADE_CLOSED, capture)
 
-    tp_event = TE(
+    tp_event = TradeEvent(
         event_type=EventType.TRADE_TP_HIT,
         trade_id=trade_id,
         pair="BTC/USDT",
@@ -1089,3 +1108,98 @@ async def test_handle_trade_closed_emits_capital_fields(
     assert trade_id in executor._closed_trades
     assert executor._closed_trades[trade_id].capital_before == Decimal("1000")
     assert executor._closed_trades[trade_id].capital_after == Decimal("1020")
+
+
+# ── Tests Story 4.4 — TradeLogger intégration (AC5) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_calls_log_trade(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    mock_trade_logger: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """AC5 : _handle_trade_closed → log_trade appelé avec le bon TradeResult (avant TRADE_CLOSED)."""
+
+    trade_id = "trade-log-check"
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="1030"))
+
+    sl_event = TradeEvent(
+        event_type=EventType.TRADE_SL_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(sl_event)  # type: ignore[arg-type]
+
+    # Vérifier que log_trade a été appelé exactement une fois
+    mock_trade_logger.log_trade.assert_called_once()
+
+    # Vérifier que l'argument est bien un TradeResult avec les bonnes valeurs
+    call_args = mock_trade_logger.log_trade.call_args
+    logged_result = call_args[0][0]
+    assert isinstance(logged_result, TradeResult)
+    assert logged_result.trade_id == trade_id
+    assert logged_result.pair == "BTC/USDT"
+    assert logged_result.capital_before == Decimal("1000")
+    assert logged_result.capital_after == Decimal("1030")
+    assert logged_result.pnl == Decimal("30")
+
+
+@pytest.mark.asyncio
+async def test_handle_trade_closed_log_trade_called_before_trade_closed_emit(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    mock_trade_logger: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """AC5 : log_trade est appelé AVANT l'émission de TRADE_CLOSED — ordre critique (FR31)."""
+    call_order: list[str] = []
+
+    async def log_trade_side_effect(result: TradeResult) -> None:
+        call_order.append("log_trade")
+
+    mock_trade_logger.log_trade.side_effect = log_trade_side_effect
+
+    async def on_trade_closed(event) -> None:  # type: ignore[no-untyped-def]
+        call_order.append("trade_closed")
+
+    event_bus.on(EventType.TRADE_CLOSED, on_trade_closed)  # type: ignore[arg-type]
+
+    trade_id = "trade-order-check"
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="1030"))
+
+    sl_event = TradeEvent(
+        event_type=EventType.TRADE_SL_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(sl_event)
+
+    assert call_order == ["log_trade", "trade_closed"], (
+        f"Ordre incorrect : {call_order} — log_trade DOIT précéder TRADE_CLOSED (AC5)"
+    )
