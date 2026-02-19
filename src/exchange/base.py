@@ -32,6 +32,11 @@ class BaseExchangeConnector(ABC):
         """Retourne les regles de marche chargees, ou None si pas encore chargees."""
         return self._market_rules
 
+    @property
+    def pair(self) -> str:
+        """Retourne la paire de trading du connecteur."""
+        return self._pair
+
     @abstractmethod
     async def connect(self) -> None: ...
 
@@ -55,6 +60,9 @@ class BaseExchangeConnector(ABC):
 
     @abstractmethod
     async def cancel_order(self, order_id: str) -> None: ...
+
+    @abstractmethod
+    async def set_leverage(self, pair: str, leverage: int) -> None: ...
 
     @abstractmethod
     async def fetch_balance(self) -> Balance: ...

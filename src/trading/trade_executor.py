@@ -9,8 +9,10 @@ from decimal import Decimal
 from loguru import logger
 
 from src.core.event_bus import EventBus
-from src.core.exceptions import OrderFailedError
+from src.core.exceptions import OrderFailedError, TradeError
 from src.exchange.base import BaseExchangeConnector
+from src.exchange.order_validator import OrderValidator
+from src.models.config import StrategyConfig
 from src.models.events import ErrorEvent, EventType, StrategyEvent, TradeEvent
 from src.models.exchange import OrderInfo, OrderSide, OrderStatus, OrderType
 from src.models.trade import TradeDirection, TradeRecord, TradeStatus
@@ -25,9 +27,11 @@ class TradeExecutor:
         self,
         connector: BaseExchangeConnector,
         event_bus: EventBus,
+        config: StrategyConfig,
     ) -> None:
         self._connector = connector
         self._event_bus = event_bus
+        self._config = config
         self._handle_signal_long_bound = self._handle_signal_long
         self._handle_signal_short_bound = self._handle_signal_short
         self._event_bus.on(EventType.STRATEGY_SIGNAL_LONG, self._handle_signal_long_bound)  # type: ignore[arg-type]
@@ -35,64 +39,123 @@ class TradeExecutor:
         logger.debug("TradeExecutor initialisé — abonné aux signaux LONG/SHORT")
 
     async def _handle_signal_long(self, event: StrategyEvent) -> None:  # type: ignore[arg-type]
-        """Gestionnaire signal long — sera complété en Stories 4.2 et 4.3."""
+        """Gestionnaire signal long — sera complété en Story 4.3."""
         logger.info(
-            "Signal LONG reçu pour {} — intégration complète en Stories 4.2/4.3",
+            "Signal LONG reçu pour {} — intégration complète en Story 4.3",
             event.pair,
         )
 
     async def _handle_signal_short(self, event: StrategyEvent) -> None:  # type: ignore[arg-type]
-        """Gestionnaire signal short — sera complété en Stories 4.2 et 4.3."""
+        """Gestionnaire signal short — sera complété en Story 4.3."""
         logger.info(
-            "Signal SHORT reçu pour {} — intégration complète en Stories 4.2/4.3",
+            "Signal SHORT reçu pour {} — intégration complète en Story 4.3",
             event.pair,
         )
+
+    def _calculate_tp_sl(
+        self,
+        direction: TradeDirection,
+        real_entry_price: Decimal,
+        signal_price: Decimal,
+        signal_sl_price: Decimal,
+        risk_reward_ratio: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        """Calcule TP et SL recalculés sur le prix réel d'entrée (FR8, FR9).
+
+        Args:
+            direction: Direction du trade (LONG/SHORT)
+            real_entry_price: Prix réel d'exécution de l'entrée (depuis entry_order.price)
+            signal_price: Prix du signal (avant exécution) — sert à calculer sl_distance
+            signal_sl_price: Prix SL absolu du signal (avant recalcul)
+            risk_reward_ratio: Ratio risk/reward (ex: 2.0 = TP = 2× la distance SL)
+
+        Returns:
+            (real_tp_price, real_sl_price) bruts avant arrondi tick_size
+
+        Raises:
+            ValueError: si sl_distance == 0 (signal_price == signal_sl_price — invalide)
+        """
+        sl_distance = abs(signal_price - signal_sl_price)
+        if sl_distance == 0:
+            raise ValueError(
+                f"Distance SL invalide : signal_price ({signal_price}) == sl_price ({signal_sl_price})"
+            )
+        if direction == TradeDirection.LONG:
+            real_sl = real_entry_price - sl_distance
+            real_tp = real_entry_price + sl_distance * risk_reward_ratio
+        else:  # SHORT
+            real_sl = real_entry_price + sl_distance
+            real_tp = real_entry_price - sl_distance * risk_reward_ratio
+        return real_tp, real_sl
 
     async def execute_atomic_trade(
         self,
         pair: str,
         direction: TradeDirection,
         quantity: Decimal,
+        signal_price: Decimal,
         sl_price: Decimal,
         capital_before: Decimal,
-        leverage: int = 1,
     ) -> TradeRecord | None:
-        """Exécute un trade de manière atomique : entrée + SL obligatoire (FR7).
+        """Exécute un trade de manière atomique : levier → entrée → SL → TP (FR7, FR8, FR9, FR10, FR13, FR14).
 
         Séquence atomique :
-        1. Placer l'ordre d'entrée (MARKET)
-        2. Placer l'ordre SL
-        3. Vérifier que le statut SL est actif (FR10)
-        4. Si SL échoue à n'importe quelle étape → fermer position immédiatement
+        1. Valider inputs (quantity, sl_price, signal_price > 0 ; pair == connector.pair)
+        2. Charger market_rules → calculer effective_leverage → set_leverage()
+        3. Placer l'ordre d'entrée (MARKET)
+        4. Recalculer TP/SL sur prix réel → arrondir tick_size
+        5. Placer l'ordre SL → vérifier statut SL (FR10)
+        6. Placer l'ordre TP (échec TP = warning, pas fermeture — position protégée par SL)
+        7. Retourner TradeRecord avec valeurs réelles
 
         Returns:
             TradeRecord avec status=OPEN si succès, None si la position a été fermée.
 
         Raises:
-            ValueError: Si quantity <= 0 ou sl_price <= 0 (erreur de programmation).
+            ValueError: Si inputs invalides ou pair ne correspond pas à connector.pair [M3]
+            TradeError: Si market_rules non chargées
         """
         if quantity <= 0:
             raise ValueError(f"quantity doit être > 0, reçu: {quantity}")
         if sl_price <= 0:
             raise ValueError(f"sl_price doit être > 0, reçu: {sl_price}")
+        if signal_price <= 0:
+            raise ValueError(f"signal_price doit être > 0, reçu: {signal_price}")
+        if pair != self._connector.pair:  # [M3]
+            raise ValueError(
+                f"pair '{pair}' ne correspond pas à la paire du connecteur '{self._connector.pair}'"
+            )
+
+        market_rules = self._connector.market_rules
+        if market_rules is None:
+            raise TradeError(
+                "market_rules non chargées — appelez connector.fetch_market_rules() avant execute_atomic_trade()"
+            )
 
         trade_id = str(uuid.uuid4())
         side = OrderSide.BUY if direction == TradeDirection.LONG else OrderSide.SELL
         close_side = OrderSide.SELL if direction == TradeDirection.LONG else OrderSide.BUY
 
+        effective_leverage = min(self._config.leverage, market_rules.max_leverage)
+
         logger.info(
-            "Début séquence atomique — trade_id={} pair={} direction={} qty={} sl={}",
+            "Début séquence atomique — trade_id={} pair={} direction={} qty={} sl={} levier={}",
             trade_id,
             pair,
             direction,
             quantity,
             sl_price,
+            effective_leverage,
         )
 
         entry_order: OrderInfo | None = None
 
         try:
-            # Étape 1 : Placer l'ordre d'entrée (MARKET)
+            # Étape 1 : Appliquer le levier avant l'ordre d'entrée (FR14)
+            await self._connector.set_leverage(pair, effective_leverage)
+            logger.debug("Levier {} appliqué pour {}", effective_leverage, pair)
+
+            # Étape 2 : Placer l'ordre d'entrée (MARKET)
             entry_order = await self._connector.place_order(
                 side=side,
                 order_type=OrderType.MARKET,
@@ -103,38 +166,79 @@ class TradeExecutor:
                     f"Ordre d'entrée FAILED: id={entry_order.id}",
                     context={"order_id": entry_order.id, "status": str(entry_order.status)},
                 )
-            real_entry_price = entry_order.price or sl_price
+            if entry_order.price is None:
+                logger.warning(
+                    "Prix d'entrée absent sur l'ordre — utilisation du signal_price={} — trade_id={}",
+                    signal_price,
+                    trade_id,
+                )
+                real_entry_price = signal_price
+            else:
+                real_entry_price = entry_order.price
             logger.info(
                 "Ordre d'entrée confirmé — id={} price={}",
                 entry_order.id,
                 real_entry_price,
             )
 
-            # Étape 2 : Placer l'ordre SL
+            # Étape 3 : Recalculer TP/SL sur prix réel + arrondi tick_size (FR8, FR9, FR13)
+            validator = OrderValidator(market_rules)
+            rr = Decimal(str(self._config.capital.risk_reward_ratio))
+            raw_tp, raw_sl = self._calculate_tp_sl(
+                direction, real_entry_price, signal_price, sl_price, rr
+            )
+            real_tp_price = validator.round_price(raw_tp)
+            real_sl_price = validator.round_price(raw_sl)
+            logger.info(
+                "TP/SL recalculés — entry_réel={} tp={} sl={} (signal_price={} signal_sl={})",
+                real_entry_price,
+                real_tp_price,
+                real_sl_price,
+                signal_price,
+                sl_price,
+            )
+
+            # Étape 4 : Placer l'ordre SL (prix recalculé sur entrée réelle)
             sl_order = await self._connector.place_order(
                 side=close_side,
                 order_type=OrderType.STOP_LOSS,
                 quantity=quantity,
-                price=sl_price,
+                price=real_sl_price,
             )
 
-            # Étape 3 : Vérifier existence SL sur l'exchange (FR10)
+            # Étape 5 : Vérifier existence SL sur l'exchange (FR10)
             if not self._verify_sl_status(sl_order):
                 raise OrderFailedError(
                     f"SL non actif sur l'exchange — id={sl_order.id} status={sl_order.status}",
                     context={"sl_order_id": sl_order.id, "status": str(sl_order.status)},
                 )
-            logger.info("SL confirmé sur l'exchange — id={} price={}", sl_order.id, sl_price)
+            logger.info("SL confirmé sur l'exchange — id={} price={}", sl_order.id, real_sl_price)
 
-            # Succès : construire le TradeRecord
+            # Étape 6 : Placer l'ordre TP (échec TP = warning seulement, position protégée par SL)
+            try:
+                tp_order = await self._connector.place_order(
+                    side=close_side,
+                    order_type=OrderType.TAKE_PROFIT,
+                    quantity=quantity,
+                    price=real_tp_price,
+                )
+                logger.info("TP placé sur l'exchange — id={} price={}", tp_order.id, real_tp_price)
+            except Exception as tp_exc:
+                logger.warning(
+                    "TP non placé (position protégée par SL) — trade_id={} erreur={}",
+                    trade_id,
+                    tp_exc,
+                )
+
+            # Succès : construire le TradeRecord avec les valeurs réelles
             record = TradeRecord(
                 id=trade_id,
                 pair=pair,
                 direction=direction,
                 entry_price=real_entry_price,
-                stop_loss=sl_price,
-                take_profit=Decimal(0),  # placeholder — sera défini en Story 4.2
-                leverage=leverage,
+                stop_loss=real_sl_price,
+                take_profit=real_tp_price,
+                leverage=effective_leverage,
                 quantity=quantity,
                 status=TradeStatus.OPEN,
                 capital_before=capital_before,
@@ -147,14 +251,15 @@ class TradeExecutor:
                     event_type=EventType.TRADE_OPENED,
                     trade_id=trade_id,
                     pair=pair,
-                    details=f"entry={real_entry_price} sl={sl_price} qty={quantity}",
+                    details=f"entry={real_entry_price} sl={real_sl_price} tp={real_tp_price} leverage={effective_leverage}",
                 ),
             )
             logger.info(
-                "Trade ouvert avec succès — trade_id={} entry={} sl={}",
+                "Trade ouvert avec succès — trade_id={} entry={} sl={} tp={}",
                 trade_id,
                 real_entry_price,
-                sl_price,
+                real_sl_price,
+                real_tp_price,
             )
             return record
 

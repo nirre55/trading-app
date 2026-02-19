@@ -429,14 +429,16 @@ class CcxtConnector(BaseExchangeConnector):
         quantity: Decimal,
         price: Decimal | None = None,
     ) -> OrderInfo:
-        """Stub — implemente dans Story 4.1."""
-        # TODO Story 4.1: utiliser OrderPriority.CRITICAL pour SL, HIGH pour TP
-        raise NotImplementedError("Implemente dans Story 4.1")
+        """Stub — sera implemente lors de l'integration CCXT complete."""
+        raise NotImplementedError("place_order sera implemente lors de l'integration CCXT")
 
     async def cancel_order(self, order_id: str) -> None:
-        """Stub — implemente dans Story 4.1."""
-        # TODO Story 4.1: utiliser OrderPriority.CRITICAL pour SL, HIGH pour TP
-        raise NotImplementedError("Implemente dans Story 4.1")
+        """Stub — sera implemente lors de l'integration CCXT complete."""
+        raise NotImplementedError("cancel_order sera implemente lors de l'integration CCXT")
+
+    async def set_leverage(self, pair: str, leverage: int) -> None:
+        """Stub — sera implemente lors de l'integration CCXT (Epic 6)."""
+        raise NotImplementedError("Sera implemente lors de l'integration CCXT (Epic 6)")
 
     async def fetch_balance(self) -> Balance:
         """Recupere la balance du compte depuis l'exchange."""

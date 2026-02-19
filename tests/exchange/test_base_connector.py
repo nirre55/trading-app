@@ -59,6 +59,9 @@ class ConcreteConnector(BaseExchangeConnector):
     async def cancel_order(self, order_id: str) -> None:
         raise NotImplementedError
 
+    async def set_leverage(self, pair: str, leverage: int) -> None:
+        raise NotImplementedError
+
     async def fetch_balance(self) -> Balance:
         raise NotImplementedError
 
@@ -113,3 +116,10 @@ class TestBaseExchangeConnectorAbstract:
         assert connector._event_bus is event_bus
         assert connector._pair == "BTC/USDT"
         assert connector._timeframe == "1m"
+
+    def test_pair_property_returns_pair(
+        self, exchange_config: ExchangeConfig, event_bus: EventBus
+    ) -> None:
+        """AC5 [M3] : @property pair retourne self._pair via la propriete publique."""
+        connector = ConcreteConnector(exchange_config, event_bus, "ETH/USDT", "5m")
+        assert connector.pair == "ETH/USDT"
