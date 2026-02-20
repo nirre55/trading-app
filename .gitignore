@@ -10,6 +10,7 @@ __pycache__/
 
 # Config secrets (ne pas commiter les vraies configs)
 config/config.yaml
+config/config.testnet.yaml
 config/strategies/*.yaml
 !config/strategies/example_strategy.yaml
 
