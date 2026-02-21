@@ -1,14 +1,19 @@
 """Tests pour l'orchestrateur principal TradingApp."""
 
+import asyncio
+import json
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.core.app import TradingApp
 from src.core.event_bus import EventBus
-from src.core.exceptions import ConfigError
-from src.models.events import AppEvent, EventType
+from src.core.exceptions import ConfigError, InsufficientBalanceError
+from src.models.events import AppEvent, EventType, StrategyEvent, TradeEvent
+from src.models.exchange import Balance
+from src.models.state import StrategyStateEnum
 
 
 @pytest.fixture()
@@ -113,3 +118,184 @@ class TestTradingApp:
         app = TradingApp()
         with pytest.raises(ConfigError, match="introuvable"):
             await app.start(config_path=tmp_path / "nonexistent.yaml")
+
+
+def _make_balance(free: Decimal = Decimal("100")) -> Balance:
+    """Helper : crée une Balance valide avec free = total."""
+    return Balance(total=free, free=free, used=Decimal("0"), currency="USDT")
+
+
+class TestRunHealthCheck:
+    """Tests unitaires de run_health_check() — vérifie connexion, API key, balance."""
+
+    @pytest.mark.asyncio
+    async def test_health_check_success(self):
+        app = TradingApp()
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock()
+        mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("100")))
+
+        await app.run_health_check(mock_conn, min_balance=Decimal("10"))
+
+        mock_conn.connect.assert_called_once()
+        mock_conn.fetch_balance.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_health_check_insufficient_balance_raises(self):
+        app = TradingApp()
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock()
+        mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("5")))
+
+        with pytest.raises(InsufficientBalanceError):
+            await app.run_health_check(mock_conn, min_balance=Decimal("10"))
+
+    @pytest.mark.asyncio
+    async def test_health_check_connect_failure_propagates(self):
+        from src.core.exceptions import ExchangeError
+
+        app = TradingApp()
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock(side_effect=ExchangeError("timeout"))
+
+        with pytest.raises(ExchangeError):
+            await app.run_health_check(mock_conn, min_balance=Decimal("10"))
+
+    @pytest.mark.asyncio
+    async def test_health_check_exact_min_balance_passes(self):
+        app = TradingApp()
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock()
+        mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("10")))
+
+        await app.run_health_check(mock_conn, min_balance=Decimal("10"))
+
+
+class TestRunLiveStateUpdates:
+    """Tests de run_live() — vérifie la mise à jour de state.json sur événements (Task 5.2)."""
+
+    def _setup_app(self, tmp_path: Path) -> tuple[TradingApp, EventBus, Path, Path]:
+        """Configure un TradingApp avec état interne mocké."""
+        state_file = tmp_path / "state.json"
+        stop_flag = tmp_path / "stop.flag"
+
+        app = TradingApp()
+        mock_config = MagicMock()
+        mock_config.paths.state = str(state_file)
+        mock_config.exchange = MagicMock()
+        app.config = mock_config
+
+        mock_strategy = MagicMock()
+        mock_strategy.pair = "BTC/USDT"
+        mock_strategy.timeframe = "1h"
+        mock_strategy.name = "ma-strat"
+        app.strategy_config = mock_strategy
+
+        event_bus = EventBus()
+        app.event_bus = event_bus
+        return app, event_bus, state_file, stop_flag
+
+    def _mock_connector(self) -> MagicMock:
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock()
+        mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("100")))
+        mock_conn.watch_candles = AsyncMock(return_value=None)
+        mock_conn.disconnect = AsyncMock()
+        return mock_conn
+
+    @pytest.mark.asyncio
+    async def test_state_json_written_at_startup(self, tmp_path: Path):
+        app, _bus, state_file, stop_flag = self._setup_app(tmp_path)
+        mock_conn = self._mock_connector()
+
+        with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch.object(app, "start", new_callable=AsyncMock):
+            live_task = asyncio.create_task(app.run_live("ma-strat"))
+            await asyncio.sleep(0.05)
+
+            assert state_file.exists()
+            data = json.loads(state_file.read_text())
+            assert "uptime_start" in data
+
+            stop_flag.touch()
+            await asyncio.wait_for(live_task, timeout=3.0)
+
+    @pytest.mark.asyncio
+    async def test_strategy_signal_updates_state_json(self, tmp_path: Path):
+        app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
+        mock_conn = self._mock_connector()
+
+        with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch.object(app, "start", new_callable=AsyncMock):
+            live_task = asyncio.create_task(app.run_live("ma-strat"))
+            await asyncio.sleep(0.05)
+
+            await event_bus.emit(
+                EventType.STRATEGY_SIGNAL_LONG,
+                StrategyEvent(
+                    event_type=EventType.STRATEGY_SIGNAL_LONG,
+                    strategy_name="ma-strat",
+                    pair="BTC/USDT",
+                ),
+            )
+            await asyncio.sleep(0.05)
+
+            data = json.loads(state_file.read_text())
+            assert "ma-strat" in data["strategy_states"]
+            assert data["strategy_states"]["ma-strat"]["state"] == StrategyStateEnum.SIGNAL_READY
+
+            stop_flag.touch()
+            await asyncio.wait_for(live_task, timeout=3.0)
+
+    @pytest.mark.asyncio
+    async def test_trade_opened_updates_active_trades(self, tmp_path: Path):
+        app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
+        mock_conn = self._mock_connector()
+
+        with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch.object(app, "start", new_callable=AsyncMock):
+            live_task = asyncio.create_task(app.run_live("ma-strat"))
+            await asyncio.sleep(0.05)
+
+            await event_bus.emit(
+                EventType.TRADE_OPENED,
+                TradeEvent(
+                    event_type=EventType.TRADE_OPENED,
+                    trade_id="trade-001",
+                    pair="BTC/USDT",
+                ),
+            )
+            await asyncio.sleep(0.05)
+
+            data = json.loads(state_file.read_text())
+            assert "trade-001" in data["active_trades"]
+
+            stop_flag.touch()
+            await asyncio.wait_for(live_task, timeout=3.0)
+
+    @pytest.mark.asyncio
+    async def test_trade_closed_removes_from_active_trades(self, tmp_path: Path):
+        app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
+        mock_conn = self._mock_connector()
+
+        with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch.object(app, "start", new_callable=AsyncMock):
+            live_task = asyncio.create_task(app.run_live("ma-strat"))
+            await asyncio.sleep(0.05)
+
+            await event_bus.emit(
+                EventType.TRADE_OPENED,
+                TradeEvent(event_type=EventType.TRADE_OPENED, trade_id="trade-001", pair="BTC/USDT"),
+            )
+            await asyncio.sleep(0.05)
+            await event_bus.emit(
+                EventType.TRADE_CLOSED,
+                TradeEvent(event_type=EventType.TRADE_CLOSED, trade_id="trade-001", pair="BTC/USDT"),
+            )
+            await asyncio.sleep(0.05)
+
+            data = json.loads(state_file.read_text())
+            assert "trade-001" not in data["active_trades"]
+
+            stop_flag.touch()
+            await asyncio.wait_for(live_task, timeout=3.0)

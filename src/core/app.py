@@ -1,14 +1,37 @@
 """Orchestrateur principal de l'application trading-app."""
 
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from loguru import logger
 
+from src.backtest.data_downloader import DataDownloader
+from src.backtest.metrics import BacktestResult, MetricsCalculator
+from src.backtest.replay_engine import ReplayEngine
+from src.backtest.trade_simulator import TradeSimulator
+from src.capital.fixed_percent import FixedPercentCapitalManager
 from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
+from src.core.exceptions import InsufficientBalanceError
 from src.core.logging import setup_logging
+from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
-from src.models.events import AppEvent, EventType
+from src.models.events import AppEvent, BaseEvent, EventType, StrategyEvent, TradeEvent
+from src.models.exchange import MarketRules
+from src.models.state import AppState, StrategyState, StrategyStateEnum
+
+# Market rules par défaut pour le backtest (pas de fetching exchange en mode simulation)
+_DEFAULT_BACKTEST_MARKET_RULES = MarketRules(
+    step_size=Decimal("0.001"),
+    tick_size=Decimal("0.01"),
+    min_notional=Decimal("5"),
+    max_leverage=125,
+)
 
 __all__ = ["TradingApp"]
 
@@ -54,3 +77,194 @@ class TradingApp:
         )
 
         logger.info("Application trading-app démarrée")
+
+    async def run_health_check(
+        self,
+        connector: CcxtConnector,
+        min_balance: Decimal = Decimal("10"),
+    ) -> None:
+        """Health check complet : connexion, API key, balance (FR39).
+
+        Args:
+            connector: Connecteur exchange à vérifier.
+            min_balance: Balance minimale requise (USDT).
+        """
+        logger.info("🔍 Health check démarré...")
+        await connector.connect()
+        logger.info("✓ Connexion exchange établie")
+        balance = await connector.fetch_balance()
+        logger.info("✓ Clé API valide — balance={} {}", balance.free, balance.currency)
+        if balance.free < min_balance:
+            raise InsufficientBalanceError(
+                f"Balance insuffisante : {balance.free} {balance.currency} < {min_balance} requis",
+                context={"balance": str(balance.free), "min_required": str(min_balance)},
+            )
+        logger.info("✓ Balance suffisante ({} {})", balance.free, balance.currency)
+        logger.info("✅ Health check réussi — système prêt")
+
+    async def run_live(
+        self,
+        strategy_name: str,
+        config_path: Path | None = None,
+        min_balance: Decimal = Decimal("10"),
+    ) -> None:
+        """Boucle de trading live : config, health check, écoute des bougies.
+
+        Args:
+            strategy_name: Nom de la stratégie à exécuter.
+            config_path: Chemin vers le fichier de configuration (optionnel).
+            min_balance: Balance minimale requise en USDT.
+        """
+        await self.start(config_path=config_path, strategy_name=strategy_name)
+        if self.config is None or self.strategy_config is None or self.event_bus is None:
+            raise RuntimeError("run_live() : état interne invalide après start()")
+
+        # Dériver data_dir depuis paths.state (ex: "data/state.json" → "data/")
+        data_dir = Path(self.config.paths.state).parent
+        stop_flag = data_dir / "stop.flag"
+        # Nettoyage d'un stop.flag périmé
+        stop_flag.unlink(missing_ok=True)
+
+        state_file = Path(self.config.paths.state)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialisation connecteur — le try/finally garantit disconnect() même si health check échoue
+        connector = CcxtConnector(
+            self.config.exchange,
+            self.event_bus,
+            self.strategy_config.pair,
+            self.strategy_config.timeframe,
+        )
+        try:
+            await self.run_health_check(connector, min_balance)
+
+            # Écriture de l'état initial
+            app_state = AppState()
+
+            def _flush_state() -> None:
+                with open(state_file, "w", encoding="utf-8") as f:
+                    json.dump(app_state.model_dump(mode="json"), f, ensure_ascii=False, default=str)
+
+            _flush_state()
+
+            # Abonnements bus — mise à jour de app_state sur événements strategy/trade (Task 5.2)
+            async def _on_strategy_event(event: BaseEvent) -> None:
+                if not isinstance(event, StrategyEvent):
+                    return
+                s = app_state.strategy_states.setdefault(
+                    event.strategy_name, StrategyState(state=StrategyStateEnum.IDLE)
+                )
+                if event.event_type in (EventType.STRATEGY_SIGNAL_LONG, EventType.STRATEGY_SIGNAL_SHORT):
+                    s.state = StrategyStateEnum.SIGNAL_READY
+                    s.conditions_met.clear()
+                elif event.event_type == EventType.STRATEGY_CONDITION_MET:
+                    s.state = StrategyStateEnum.WATCHING
+                    if event.condition_index is not None and event.condition_index not in s.conditions_met:
+                        s.conditions_met.append(event.condition_index)
+                elif event.event_type == EventType.STRATEGY_TIMEOUT:
+                    s.state = StrategyStateEnum.IDLE
+                    s.conditions_met.clear()
+                _flush_state()
+
+            async def _on_trade_event(event: BaseEvent) -> None:
+                if not isinstance(event, TradeEvent):
+                    return
+                if event.event_type == EventType.TRADE_OPENED:
+                    if event.trade_id not in app_state.active_trades:
+                        app_state.active_trades.append(event.trade_id)
+                    for s in app_state.strategy_states.values():
+                        if s.state == StrategyStateEnum.SIGNAL_READY:
+                            s.state = StrategyStateEnum.IN_TRADE
+                elif event.event_type == EventType.TRADE_CLOSED:
+                    if event.trade_id in app_state.active_trades:
+                        app_state.active_trades.remove(event.trade_id)
+                    if not app_state.active_trades:
+                        for s in app_state.strategy_states.values():
+                            if s.state == StrategyStateEnum.IN_TRADE:
+                                s.state = StrategyStateEnum.IDLE
+                _flush_state()
+
+            for et in (
+                EventType.STRATEGY_CONDITION_MET,
+                EventType.STRATEGY_SIGNAL_LONG,
+                EventType.STRATEGY_SIGNAL_SHORT,
+                EventType.STRATEGY_TIMEOUT,
+            ):
+                self.event_bus.on(et, _on_strategy_event)
+            for et in (EventType.TRADE_OPENED, EventType.TRADE_CLOSED):
+                self.event_bus.on(et, _on_trade_event)
+
+            # Démarrage de la boucle principale
+            logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
+            candle_task = asyncio.create_task(connector.watch_candles())
+            try:
+                while not stop_flag.exists():
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                candle_task.cancel()
+                try:
+                    await candle_task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            await connector.disconnect()
+            stop_flag.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+            await self.event_bus.emit(
+                EventType.APP_STOPPED,
+                AppEvent(event_type=EventType.APP_STOPPED),
+            )
+            logger.info("⏹ Application arrêtée proprement")
+
+    async def run_backtest(
+        self,
+        strategy_name: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        output_path: Path | None = None,
+        config_path: Path | None = None,
+    ) -> BacktestResult:
+        """Orchestre un backtest complet : téléchargement → replay → métriques (FR21-FR26).
+
+        Args:
+            strategy_name: Nom de la stratégie à backtester.
+            start_dt: Date/heure de début (TZ-aware UTC).
+            end_dt: Date/heure de fin (TZ-aware UTC).
+            output_path: Chemin pour exporter les résultats en JSON (optionnel).
+            config_path: Chemin vers le fichier de configuration (optionnel).
+        """
+        await self.start(config_path=config_path, strategy_name=strategy_name)
+        if self.config is None or self.strategy_config is None or self.event_bus is None:
+            raise RuntimeError("run_backtest() : état interne invalide après start()")
+
+        # Dériver data_dir depuis paths.trades (ex: "data/trades" → "data/")
+        data_dir = Path(self.config.paths.trades).parent
+        downloader = DataDownloader(data_dir / "historical")
+        replay_engine = ReplayEngine(downloader, self.event_bus)
+
+        capital_manager = FixedPercentCapitalManager(
+            self.strategy_config.capital.risk_percent,
+            _DEFAULT_BACKTEST_MARKET_RULES,
+        )
+        initial_capital = Decimal("10000")
+        simulator = TradeSimulator(
+            self.event_bus, self.strategy_config, capital_manager, initial_capital
+        )
+
+        await replay_engine.run(
+            self.strategy_config.exchange,
+            self.strategy_config.pair,
+            self.strategy_config.timeframe,
+            start_dt,
+            end_dt,
+        )
+
+        calculator = MetricsCalculator()
+        result = calculator.compute(simulator.closed_trades)
+
+        if output_path is not None:
+            calculator.export_json(result, output_path)
+
+        return result
