@@ -15,6 +15,7 @@ from src.backtest.metrics import BacktestResult, MetricsCalculator
 from src.backtest.replay_engine import ReplayEngine
 from src.backtest.trade_simulator import TradeSimulator
 from src.capital.fixed_percent import FixedPercentCapitalManager
+from src.core.backup import LogBackupService
 from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
 from src.core.exceptions import InsufficientBalanceError
@@ -205,6 +206,14 @@ class TradingApp:
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
             candle_task = asyncio.create_task(connector.watch_candles())
+            backup_service = LogBackupService()
+            backup_task = asyncio.create_task(
+                backup_service.run(
+                    Path(self.config.paths.logs),
+                    Path(self.config.paths.backup),
+                    self.config.defaults.backup_interval_hours,
+                )
+            )
             try:
                 while not stop_flag.exists():
                     await asyncio.sleep(2)
@@ -212,8 +221,13 @@ class TradingApp:
                 pass
             finally:
                 candle_task.cancel()
+                backup_task.cancel()
                 try:
                     await candle_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await backup_task
                 except asyncio.CancelledError:
                     pass
         finally:

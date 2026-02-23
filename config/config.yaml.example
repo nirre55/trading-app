@@ -10,7 +10,9 @@ paths:
   logs: "data/logs"
   trades: "data/trades"
   state: "data/state.json"
+  backup: "data/backups"    # Répertoire de destination des backups de logs
 
 defaults:
   log_level: "INFO"         # INFO ou DEBUG
   risk_percent: 1.0         # % du capital risqué par trade
+  backup_interval_hours: 24 # Fréquence de backup en heures (défaut: 24h)

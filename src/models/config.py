@@ -25,6 +25,7 @@ class PathsConfig(BaseModel):
     logs: str
     trades: str
     state: str
+    backup: str = "data/backups"
 
 
 class DefaultsConfig(BaseModel):
@@ -34,6 +35,7 @@ class DefaultsConfig(BaseModel):
 
     log_level: str = "INFO"
     risk_percent: float = Field(default=1.0)
+    backup_interval_hours: int = Field(default=24, gt=0)
 
 
 class AppConfig(BaseModel):

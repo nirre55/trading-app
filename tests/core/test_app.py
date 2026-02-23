@@ -182,6 +182,9 @@ class TestRunLiveStateUpdates:
         app = TradingApp()
         mock_config = MagicMock()
         mock_config.paths.state = str(state_file)
+        mock_config.paths.logs = str(tmp_path / "logs")
+        mock_config.paths.backup = str(tmp_path / "backups")
+        mock_config.defaults.backup_interval_hours = 86400  # 86 400 h ≫ durée des tests → backup_task ne s'exécute jamais
         mock_config.exchange = MagicMock()
         app.config = mock_config
 
