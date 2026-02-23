@@ -12,6 +12,7 @@ __all__ = [
     "InsufficientBalanceError",
     "ConfigError",
     "DataValidationError",
+    "LockError",
 ]
 
 
@@ -53,3 +54,7 @@ class ConfigError(TradingAppError):
 
 class DataValidationError(TradingAppError):
     """Erreurs de validation des données."""
+
+
+class LockError(TradingAppError):
+    """Instance déjà active détectée via fichier de lock."""

@@ -10,7 +10,7 @@ import click
 
 from src.core.app import TradingApp
 from src.core.config import load_app_config
-from src.core.exceptions import ConfigError, ExchangeError, InsufficientBalanceError
+from src.core.exceptions import ConfigError, ExchangeError, InsufficientBalanceError, LockError
 
 __all__ = ["trade"]
 
@@ -38,6 +38,9 @@ def start(ctx, strategy, min_balance):
         raise SystemExit(1) from e
     except InsufficientBalanceError as e:
         click.echo(f"❌ Balance insuffisante : {e}", err=True)
+        raise SystemExit(1) from e
+    except LockError as e:
+        click.echo(f"❌ Double instance détectée : {e}", err=True)
         raise SystemExit(1) from e
     except KeyboardInterrupt:
         click.echo("\n⏹ Arrêt demandé par l'utilisateur")

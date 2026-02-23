@@ -19,6 +19,7 @@ from src.core.backup import LogBackupService
 from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
 from src.core.exceptions import InsufficientBalanceError
+from src.core.lock import LockFile
 from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
@@ -137,14 +138,21 @@ class TradingApp:
         state_file = Path(self.config.paths.state)
         state_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Initialisation connecteur — le try/finally garantit disconnect() même si health check échoue
-        connector = CcxtConnector(
-            self.config.exchange,
-            self.event_bus,
-            self.strategy_config.pair,
-            self.strategy_config.timeframe,
-        )
+        # Acquisition du lock AVANT le connecteur — LockError propagée avant toute création (FR40)
+        lock_path = data_dir / "trading.lock"
+        lock = LockFile(lock_path)
+        lock.acquire()
+
+        # Initialisation connecteur — connecteur=None jusqu'à sa création pour garantir
+        # que lock.release() s'exécute même si CcxtConnector() lève avant le try (FR40)
+        connector: CcxtConnector | None = None
         try:
+            connector = CcxtConnector(
+                self.config.exchange,
+                self.event_bus,
+                self.strategy_config.pair,
+                self.strategy_config.timeframe,
+            )
             await self.run_health_check(connector, min_balance)
 
             # Écriture de l'état initial
@@ -231,7 +239,9 @@ class TradingApp:
                 except asyncio.CancelledError:
                     pass
         finally:
-            await connector.disconnect()
+            if connector is not None:
+                await connector.disconnect()
+            lock.release()
             stop_flag.unlink(missing_ok=True)
             state_file.unlink(missing_ok=True)
             await self.event_bus.emit(
