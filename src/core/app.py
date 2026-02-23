@@ -18,7 +18,7 @@ from src.capital.fixed_percent import FixedPercentCapitalManager
 from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
 from src.core.exceptions import InsufficientBalanceError
-from src.core.logging import setup_logging
+from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
 from src.models.events import AppEvent, BaseEvent, EventType, StrategyEvent, TradeEvent
@@ -63,6 +63,14 @@ class TradingApp:
             log_level=self.config.defaults.log_level,
             log_dir=self.config.paths.logs,
         )
+        # Enregistrer les valeurs brutes des clés API pour filtrage dynamique (FR34, NFR4)
+        sensitive: list[str] = [
+            self.config.exchange.api_key.get_secret_value(),
+            self.config.exchange.api_secret.get_secret_value(),
+        ]
+        if self.config.exchange.password is not None:
+            sensitive.append(self.config.exchange.password.get_secret_value())
+        register_sensitive_values(*sensitive)
 
         if strategy_name is not None:
             self.strategy_config = load_strategy_by_name(
