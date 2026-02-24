@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +19,7 @@ from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
 from src.core.exceptions import InsufficientBalanceError
 from src.core.lock import LockFile
+from src.core.state_manager import StateManager
 from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
@@ -136,7 +136,6 @@ class TradingApp:
         stop_flag.unlink(missing_ok=True)
 
         state_file = Path(self.config.paths.state)
-        state_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Acquisition du lock AVANT le connecteur — LockError propagée avant toute création (FR40)
         lock_path = data_dir / "trading.lock"
@@ -157,12 +156,8 @@ class TradingApp:
 
             # Écriture de l'état initial
             app_state = AppState()
-
-            def _flush_state() -> None:
-                with open(state_file, "w", encoding="utf-8") as f:
-                    json.dump(app_state.model_dump(mode="json"), f, ensure_ascii=False, default=str)
-
-            _flush_state()
+            state_manager = StateManager(state_file)
+            state_manager.save(app_state)
 
             # Abonnements bus — mise à jour de app_state sur événements strategy/trade (Task 5.2)
             async def _on_strategy_event(event: BaseEvent) -> None:
@@ -181,7 +176,7 @@ class TradingApp:
                 elif event.event_type == EventType.STRATEGY_TIMEOUT:
                     s.state = StrategyStateEnum.IDLE
                     s.conditions_met.clear()
-                _flush_state()
+                state_manager.save(app_state)
 
             async def _on_trade_event(event: BaseEvent) -> None:
                 if not isinstance(event, TradeEvent):
@@ -199,7 +194,7 @@ class TradingApp:
                         for s in app_state.strategy_states.values():
                             if s.state == StrategyStateEnum.IN_TRADE:
                                 s.state = StrategyStateEnum.IDLE
-                _flush_state()
+                state_manager.save(app_state)
 
             for et in (
                 EventType.STRATEGY_CONDITION_MET,
