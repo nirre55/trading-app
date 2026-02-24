@@ -1,5 +1,7 @@
 """Interface abstraite pour les connecteurs d'exchange."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any
@@ -69,3 +71,8 @@ class BaseExchangeConnector(ABC):
 
     @abstractmethod
     async def fetch_positions(self) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    async def fetch_open_orders(self) -> list[dict[str, Any]]:
+        """Récupère les ordres ouverts pour la paire configurée."""
+        ...

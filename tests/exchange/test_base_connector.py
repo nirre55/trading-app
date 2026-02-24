@@ -68,6 +68,9 @@ class ConcreteConnector(BaseExchangeConnector):
     async def fetch_positions(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    async def fetch_open_orders(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class IncompleteConnector(BaseExchangeConnector):
     """Implementation incomplete — manque des methodes abstraites."""

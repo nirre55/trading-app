@@ -1,5 +1,7 @@
 """Connecteur CCXT Pro avec WebSocket, gestion de connexion et auto-reconnexion."""
 
+from __future__ import annotations
+
 import asyncio
 from decimal import Decimal
 from typing import Any
@@ -400,12 +402,14 @@ class CcxtConnector(BaseExchangeConnector):
             leverage_data = market.get("limits", {}).get("leverage", {})
             raw_max_leverage = leverage_data.get("max") if isinstance(leverage_data, dict) else None
 
+            max_leverage: int
             if raw_max_leverage is not None:
                 max_leverage = int(raw_max_leverage)
                 logger.info("max_leverage={} pour {} (source: markets)", max_leverage, pair)
             else:
-                max_leverage = await self._fetch_leverage_from_api(pair)
-                if max_leverage is not None:
+                api_leverage = await self._fetch_leverage_from_api(pair)
+                if api_leverage is not None:
+                    max_leverage = api_leverage
                     logger.info("max_leverage={} pour {} (source: fetch_leverage_tiers)", max_leverage, pair)
                 else:
                     max_leverage = 1
@@ -540,6 +544,27 @@ class CcxtConnector(BaseExchangeConnector):
             logger.error("Erreur exchange lors de fetch_positions sur {} : {}", self._exchange_name, exc)
             raise ExchangeError(
                 f"Erreur exchange lors de fetch_positions sur {self._exchange_name} : {exc}",
+                context={"exchange": self._exchange_name, "error": str(exc)},
+            ) from exc
+
+    async def fetch_open_orders(self) -> list[dict[str, Any]]:
+        """Récupère les ordres ouverts pour la paire (SL, TP, etc.)."""
+
+        async def _do_fetch() -> list[dict[str, Any]]:
+            return await self._exchange.fetch_open_orders(self._pair)
+
+        try:
+            return await self._rate_limiter.execute(_do_fetch)
+        except ccxt.NetworkError as exc:
+            logger.error("Erreur reseau lors de fetch_open_orders sur {} : {}", self._exchange_name, exc)
+            raise ExchangeConnectionError(
+                f"Erreur reseau lors de fetch_open_orders sur {self._exchange_name} : {exc}",
+                context={"exchange": self._exchange_name, "error": str(exc)},
+            ) from exc
+        except ccxt.BaseError as exc:
+            logger.error("Erreur exchange lors de fetch_open_orders sur {} : {}", self._exchange_name, exc)
+            raise ExchangeError(
+                f"Erreur exchange lors de fetch_open_orders sur {self._exchange_name} : {exc}",
                 context={"exchange": self._exchange_name, "error": str(exc)},
             ) from exc
 

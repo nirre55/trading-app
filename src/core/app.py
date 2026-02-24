@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import signal
+import sys
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,8 +25,8 @@ from src.core.state_manager import StateManager
 from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
-from src.models.events import AppEvent, BaseEvent, EventType, StrategyEvent, TradeEvent
-from src.models.exchange import MarketRules
+from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, StrategyEvent, TradeEvent
+from src.models.exchange import MarketRules, OrderSide, OrderType
 from src.models.state import AppState, StrategyState, StrategyStateEnum
 
 # Market rules par défaut pour le backtest (pas de fetching exchange en mode simulation)
@@ -112,6 +114,147 @@ class TradingApp:
         logger.info("✓ Balance suffisante ({} {})", balance.free, balance.currency)
         logger.info("✅ Health check réussi — système prêt")
 
+    async def run_crash_recovery(
+        self,
+        connector: CcxtConnector,
+        state_manager: StateManager,
+        pair: str,
+    ) -> AppState | None:
+        """Recovery après crash : vérifie et protège les positions ouvertes (FR42, NFR8).
+
+        Returns:
+            AppState restauré si recovery effectuée, None si démarrage propre.
+        """
+        state = state_manager.load()
+
+        if state is None or not state.active_trades:
+            logger.debug("ℹ️ Démarrage propre — pas de recovery nécessaire")
+            return None
+
+        logger.warning(
+            "⚠️ {} trade(s) actif(s) détecté(s) sur {} — démarrage en mode recovery...",
+            len(state.active_trades),
+            pair,
+        )
+
+        try:
+            async with asyncio.timeout(55):  # Marge sous 60s (NFR8)
+                positions = await connector.fetch_positions()
+                open_orders = await connector.fetch_open_orders()
+
+                # Identifier les ordres de protection (SL + TP)
+                protection_types = {
+                    "stop_market", "stop", "stop_loss", "take_profit_market", "take_profit"
+                }
+                protection_orders = [
+                    o for o in open_orders
+                    if o.get("type", "").lower() in protection_types
+                    or o.get("stopPrice") is not None
+                    or o.get("triggerPrice") is not None
+                ]
+                has_protection = len(protection_orders) > 0
+
+                # Chercher la position ouverte UNE SEULE FOIS — partagée par tous les trade_ids
+                # (système single-pair : tous les trade_ids actifs correspondent à la même position)
+                open_position = next(
+                    (p for p in positions if float(p.get("contracts", 0)) > 0),
+                    None,
+                )
+
+                # Traitement de chaque trade actif
+                for trade_id in list(state.active_trades):
+                    if open_position is None:
+                        # Position fermée pendant le crash (SL/TP hit ou fermeture externe)
+                        logger.info(
+                            "ℹ️ Trade {} : position absente sur l'exchange — trade terminé hors système",
+                            trade_id,
+                        )
+                        state.active_trades.remove(trade_id)
+                        continue
+
+                    if has_protection:
+                        logger.info(
+                            "✅ Trade {} : position protégée ({} ordres TP/SL) — monitoring reprend",
+                            trade_id,
+                            len(protection_orders),
+                        )
+                    else:
+                        # CRITIQUE : position sans protection → fermeture immédiate (FR42)
+                        logger.critical(
+                            "🚨 Trade {} : position SANS TP/SL sur l'exchange — fermeture immédiate!",
+                            trade_id,
+                        )
+                        side = open_position.get("side", "long").lower()
+                        close_qty = Decimal(str(open_position.get("contracts", 0)))
+
+                        close_side = OrderSide.SELL if side == "long" else OrderSide.BUY
+                        await connector.place_order(close_side, OrderType.MARKET, close_qty)
+                        logger.info("Position {} fermée via ordre MARKET", trade_id)
+                        state.active_trades.remove(trade_id)
+                        open_position = None  # Position fermée — absente pour les trades suivants
+
+                        if self.event_bus is not None:
+                            await self.event_bus.emit(
+                                EventType.ERROR_CRITICAL,
+                                ErrorEvent(
+                                    event_type=EventType.ERROR_CRITICAL,
+                                    error_type="RecoveryCritical",
+                                    message=f"Position {trade_id} fermée en recovery (TP/SL absents)",
+                                ),
+                            )
+
+                # Persister l'état corrigé après recovery
+                state_manager.save(state)
+                logger.info("✅ Recovery terminée — état sauvegardé")
+                return state
+
+        except asyncio.TimeoutError:
+            logger.error(
+                "❌ Recovery timeout dépassé (> 55s) — certaines positions non vérifiées (NFR8)"
+            )
+            return state  # Retourner l'état partiel
+
+    async def _verify_tpsl_on_shutdown(
+        self,
+        connector: CcxtConnector,
+        app_state: AppState,
+    ) -> None:
+        """Vérifie les ordres TP/SL avant fermeture et logge le résultat (AC2, FR41).
+
+        Non-bloquant : les erreurs exchange sont loggées, jamais propagées.
+        """
+        if not app_state.active_trades:
+            logger.info("ℹ️ Arrêt — aucun trade actif, vérification TP/SL non requise")
+            return
+        try:
+            positions = await connector.fetch_positions()
+            open_orders = await connector.fetch_open_orders()
+            protection_types = {
+                "stop_market", "stop", "stop_loss", "take_profit_market", "take_profit"
+            }
+            protection_orders = [
+                o for o in open_orders
+                if o.get("type", "").lower() in protection_types
+                or o.get("stopPrice") is not None
+                or o.get("triggerPrice") is not None
+            ]
+            if positions:
+                if protection_orders:
+                    logger.info(
+                        "✅ Shutdown : {} position(s) ouverte(s), {} ordre(s) TP/SL en place",
+                        len(positions),
+                        len(protection_orders),
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ Shutdown : {} position(s) ouverte(s) SANS ordre TP/SL détecté — vérifiez manuellement !",
+                        len(positions),
+                    )
+            else:
+                logger.info("ℹ️ Shutdown : aucune position ouverte sur l'exchange")
+        except Exception as exc:
+            logger.error("❌ Impossible de vérifier les TP/SL avant arrêt : {}", exc)
+
     async def run_live(
         self,
         strategy_name: str,
@@ -145,6 +288,7 @@ class TradingApp:
         # Initialisation connecteur — connecteur=None jusqu'à sa création pour garantir
         # que lock.release() s'exécute même si CcxtConnector() lève avant le try (FR40)
         connector: CcxtConnector | None = None
+        app_state: AppState | None = None  # Accessible dans finally pour _verify_tpsl_on_shutdown
         try:
             connector = CcxtConnector(
                 self.config.exchange,
@@ -154,9 +298,14 @@ class TradingApp:
             )
             await self.run_health_check(connector, min_balance)
 
-            # Écriture de l'état initial
-            app_state = AppState()
+            # Création du StateManager avant crash recovery
             state_manager = StateManager(state_file)
+
+            # Crash recovery : vérifie positions ouvertes si state.json existe (FR42)
+            recovered_state = await self.run_crash_recovery(
+                connector, state_manager, self.strategy_config.pair
+            )
+            app_state = recovered_state if recovered_state is not None else AppState()
             state_manager.save(app_state)
 
             # Abonnements bus — mise à jour de app_state sur événements strategy/trade (Task 5.2)
@@ -208,6 +357,19 @@ class TradingApp:
 
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
+
+            # Gestion des signaux SIGTERM/SIGINT (FR41)
+            shutdown_event = asyncio.Event()
+            if sys.platform != "win32":
+                loop = asyncio.get_running_loop()
+                loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
+                loop.add_signal_handler(signal.SIGINT, shutdown_event.set)
+            else:
+                loop = asyncio.get_running_loop()  # Capturer dans le contexte async (non déprécié)
+                def _win_handler(sig: int, frame: object) -> None:
+                    loop.call_soon_threadsafe(shutdown_event.set)
+                signal.signal(signal.SIGINT, _win_handler)
+
             candle_task = asyncio.create_task(connector.watch_candles())
             backup_service = LogBackupService()
             backup_task = asyncio.create_task(
@@ -218,7 +380,7 @@ class TradingApp:
                 )
             )
             try:
-                while not stop_flag.exists():
+                while not stop_flag.exists() and not shutdown_event.is_set():
                     await asyncio.sleep(2)
             except asyncio.CancelledError:
                 pass
@@ -234,11 +396,13 @@ class TradingApp:
                 except asyncio.CancelledError:
                     pass
         finally:
+            # AC2 : vérification TP/SL avant fermeture — logge l'état des positions (FR41)
+            if connector is not None and app_state is not None:
+                await self._verify_tpsl_on_shutdown(connector, app_state)
             if connector is not None:
                 await connector.disconnect()
             lock.release()
             stop_flag.unlink(missing_ok=True)
-            state_file.unlink(missing_ok=True)
             await self.event_bus.emit(
                 EventType.APP_STOPPED,
                 AppEvent(event_type=EventType.APP_STOPPED),
