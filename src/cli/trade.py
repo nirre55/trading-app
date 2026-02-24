@@ -31,19 +31,19 @@ def start(ctx, strategy, min_balance):
     try:
         asyncio.run(app.run_live(strategy, config_path=config_path, min_balance=Decimal(str(min_balance))))
     except ConfigError as e:
-        click.echo(f"❌ Erreur de configuration : {e}", err=True)
+        click.echo(f"[ERREUR] Erreur de configuration : {e}", err=True)
         raise SystemExit(1) from e
     except ExchangeError as e:
-        click.echo(f"❌ Erreur exchange : {e}", err=True)
+        click.echo(f"[ERREUR] Erreur exchange : {e}", err=True)
         raise SystemExit(1) from e
     except InsufficientBalanceError as e:
-        click.echo(f"❌ Balance insuffisante : {e}", err=True)
+        click.echo(f"[ERREUR] Balance insuffisante : {e}", err=True)
         raise SystemExit(1) from e
     except LockError as e:
-        click.echo(f"❌ Double instance détectée : {e}", err=True)
+        click.echo(f"[ERREUR] Double instance détectée : {e}", err=True)
         raise SystemExit(1) from e
     except KeyboardInterrupt:
-        click.echo("\n⏹ Arrêt demandé par l'utilisateur")
+        click.echo("\n[ARRET] Arrêt demandé par l'utilisateur")
 
 
 @trade.command()
@@ -61,4 +61,4 @@ def stop(ctx):
         stop_flag = Path("data/stop.flag")
     stop_flag.parent.mkdir(parents=True, exist_ok=True)
     stop_flag.touch()
-    click.echo("⏹ Signal d'arrêt envoyé — le système va s'arrêter proprement")
+    click.echo("[ARRET] Signal d'arrêt envoyé — le système va s'arrêter proprement")
