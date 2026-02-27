@@ -34,3 +34,13 @@ class BaseCapitalManager(ABC):
             ValueError: Si sl_distance == 0 ou quantité résultante == 0
         """
         ...
+
+    def record_trade_result(self, won: bool) -> None:
+        """Enregistre le résultat d'un trade pour les stratégies adaptatives (FR44, FR45, FR46).
+
+        Implémentation par défaut : no-op (ignoré pour les stratégies statiques).
+        Les stratégies adaptatives (ex: MartingaleCapitalManager) surchargent cette méthode.
+
+        Args:
+            won: True si le trade est un gain, False si c'est une perte.
+        """
