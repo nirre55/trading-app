@@ -115,7 +115,28 @@ class TestIsProcessRunning:
         with patch("src.core.lock.os.kill", side_effect=PermissionError):
             assert _is_process_running(99999999) is True
 
-    def test_os_error_assumes_process_is_running(self) -> None:
-        """OSError générique (edge case Windows) → assumer actif par sécurité."""
-        with patch("src.core.lock.os.kill", side_effect=OSError("invalid argument")):
+    def test_os_error_windows_delegates_to_tasklist(self) -> None:
+        """OSError sur Windows → délègue à _is_process_running_windows (tasklist)."""
+        with patch("src.core.lock.os.kill", side_effect=OSError("invalid argument")), \
+             patch("src.core.lock.sys.platform", "win32"), \
+             patch("src.core.lock._is_process_running_windows", return_value=True) as mock_win:
             assert _is_process_running(99999999) is True
+            mock_win.assert_called_once_with(99999999)
+
+    def test_os_error_non_windows_assumes_running(self) -> None:
+        """OSError sur OS non-Windows → assumer actif par sécurité (comportement conservatif)."""
+        with patch("src.core.lock.os.kill", side_effect=OSError("invalid argument")), \
+             patch("src.core.lock.sys.platform", "linux"):
+            assert _is_process_running(99999999) is True
+
+    def test_windows_tasklist_dead_pid_returns_false(self) -> None:
+        """_is_process_running_windows retourne False pour un PID inexistant."""
+        from src.core.lock import _is_process_running_windows
+        # PID 99999999 n'existe pas → tasklist ne le trouve pas → False
+        assert _is_process_running_windows(99999999) is False
+
+    def test_windows_tasklist_current_pid_returns_true(self) -> None:
+        """_is_process_running_windows retourne True pour le PID courant."""
+        import os as _os
+        from src.core.lock import _is_process_running_windows
+        assert _is_process_running_windows(_os.getpid()) is True

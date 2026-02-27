@@ -26,33 +26,33 @@ def status(ctx):
         state_file = Path("data/state.json")  # fallback
 
     if not state_file.exists():
-        click.echo("ℹ️  Aucune session de trading active")
+        click.echo("[INFO] Aucune session de trading active")
         return
 
     try:
         with open(state_file, encoding="utf-8") as f:
             state_data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        click.echo(f"⚠️  Impossible de lire l'état : {e}", err=True)
+        click.echo(f"[WARN] Impossible de lire l'etat : {e}", err=True)
         return
 
     try:
         uptime_start = datetime.fromisoformat(state_data.get("uptime_start", ""))
     except (ValueError, TypeError):
-        click.echo("⚠️  Champ 'uptime_start' manquant ou invalide dans l'état", err=True)
+        click.echo("[WARN] Champ 'uptime_start' manquant ou invalide dans l'etat", err=True)
         return
     uptime = datetime.now(timezone.utc) - uptime_start
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
 
-    click.echo("📊 Statut du système de trading :")
+    click.echo("Statut du systeme de trading :")
     click.echo(f"  Uptime           : {hours:02d}:{minutes:02d}:{seconds:02d}")
     active_trades = state_data.get("active_trades", [])
     click.echo(f"  Trades actifs    : {len(active_trades)} {active_trades}")
     strategy_states = state_data.get("strategy_states", {})
     if strategy_states:
-        click.echo("  Stratégies :")
+        click.echo("  Strategies :")
         for name, s in strategy_states.items():
             click.echo(f"    {name}: {s.get('state', 'UNKNOWN')}")
     else:
-        click.echo("  Stratégies       : aucune")
+        click.echo("  Strategies       : aucune")

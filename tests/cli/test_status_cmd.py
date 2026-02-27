@@ -65,7 +65,9 @@ class TestStatusCommand:
     def test_status_fallback_when_config_error(self, tmp_path):
         with patch("src.cli.status.load_app_config", side_effect=ConfigError("config error")):
             runner = CliRunner()
-            result = runner.invoke(cli, ["status"])
+            # Exécution dans un répertoire temporaire : data/state.json est absent
+            with runner.isolated_filesystem():
+                result = runner.invoke(cli, ["status"])
             # Fallback sur data/state.json absent → affiche "Aucune session"
             assert result.exit_code == 0
             assert "Aucune session" in result.output

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -103,5 +105,29 @@ def _is_process_running(pid: int) -> bool:
         # EPERM : PID existe mais permission refusée → toujours actif
         return True
     except OSError:
-        # Fallback Windows ou autre erreur OS → assumer actif par sécurité
-        return True
+        # Sur Windows, os.kill(pid, 0) lève OSError pour les PIDs inexistants
+        # (au lieu de ProcessLookupError) — vérification secondaire via tasklist
+        if sys.platform == "win32":
+            return _is_process_running_windows(pid)
+        return True  # Autres OS : assumer actif par sécurité
+
+
+def _is_process_running_windows(pid: int) -> bool:
+    """Vérifie l'existence d'un PID sur Windows via tasklist (fallback fiable).
+
+    Args:
+        pid: PID du processus à vérifier.
+
+    Returns:
+        True si le processus est trouvé dans la liste des processus, False sinon.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return str(pid) in result.stdout
+    except Exception:
+        return True  # En cas d'erreur, assumer actif par sécurité

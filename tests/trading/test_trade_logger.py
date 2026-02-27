@@ -171,3 +171,31 @@ async def test_log_duration_serialized_as_float(
     # timedelta(hours=1, minutes=2, seconds=3) = 3723 secondes
     assert isinstance(record["duration"], (int, float))
     assert record["duration"] == pytest.approx(3723.0)
+
+
+@pytest.mark.asyncio
+async def test_jsonl_survives_simulated_crash(
+    trades_dir: Path, sample_result: TradeResult
+) -> None:
+    """Persistance : un trade écrit survive à un crash simulé (aucun cleanup appelé).
+
+    Règle dette technique Epic 6 (MEDIUM) : toute composante écrivant sur disque
+    doit avoir au moins un test vérifiant la survie des données sans cleanup.
+    Le flush immédiat (NFR11) garantit qu'os.fsync() est appelé avant le retour.
+    """
+    # Phase 1 : écriture via une première instance (simulée puis "crashée")
+    logger_instance = TradeLogger(trades_dir)
+    await logger_instance.log_trade(sample_result)
+    # Pas de cleanup — simule un crash abrupt (pas d'appel à close/flush supplémentaire)
+    del logger_instance
+
+    # Phase 2 : relecture par une nouvelle instance indépendante
+    files = list(trades_dir.glob("*.jsonl"))
+    assert len(files) == 1, "Le fichier JSONL doit exister après crash simulé"
+
+    lines = [l for l in files[0].read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 1, "Le trade doit être présent dans le fichier"
+
+    record = json.loads(lines[0])
+    assert record["trade_id"] == sample_result.trade_id
+    assert record["pair"] == sample_result.pair
