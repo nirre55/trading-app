@@ -1,8 +1,23 @@
 """Modèles Pydantic pour la configuration de l'application."""
 
+from __future__ import annotations
+
+import math
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+
+__all__ = [
+    "ExchangeConfig",
+    "PathsConfig",
+    "DefaultsConfig",
+    "AppConfig",
+    "ConditionConfig",
+    "CapitalConfig",
+    "StrategyConfig",
+]
+
+_MARTINGALE_MODES = frozenset({"martingale", "martingale_inverse"})
 
 
 class ExchangeConfig(BaseModel):
@@ -66,6 +81,21 @@ class CapitalConfig(BaseModel):
     mode: str
     risk_percent: float
     risk_reward_ratio: float
+    factor: float | None = None
+    max_steps: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_martingale_fields(self) -> CapitalConfig:
+        if self.mode in _MARTINGALE_MODES:
+            if self.factor is None:
+                raise ValueError(
+                    f"Le champ 'factor' est requis pour le mode '{self.mode}'"
+                )
+        if self.factor is not None and (not math.isfinite(self.factor) or self.factor <= 0):
+            raise ValueError("'factor' doit être un nombre fini strictement positif (> 0)")
+        if self.max_steps is not None and self.max_steps <= 0:
+            raise ValueError("'max_steps' doit être strictement positif (> 0)")
+        return self
 
 
 class StrategyConfig(BaseModel):
