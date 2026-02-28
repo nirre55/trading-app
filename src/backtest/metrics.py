@@ -25,6 +25,8 @@ class BacktestMetrics(BaseModel):
     max_consecutive_wins: int
     max_consecutive_losses: int
     profit_factor: float  # sum(gains) / sum(|pertes|), inf si 0 perte
+    risk_percent_min: float | None = None  # risk_percent min utilisé — FR47 (martingale)
+    risk_percent_max: float | None = None  # risk_percent max utilisé — FR47 (martingale)
 
 
 class BacktestResult(BaseModel):
@@ -119,6 +121,11 @@ class MetricsCalculator:
             max_consec_wins = max(max_consec_wins, cur_wins)
             max_consec_losses = max(max_consec_losses, cur_losses)
 
+        # Risk percent min/max — disponibles uniquement si les trades les portent (mode martingale)
+        risk_percents = [t.risk_percent for t in trades if t.risk_percent is not None]
+        risk_percent_min = min(risk_percents) if risk_percents else None
+        risk_percent_max = max(risk_percents) if risk_percents else None
+
         logger.info(
             "Métriques calculées — {} trades, win_rate={:.1%}, profit_factor={:.2f}",
             total_trades,
@@ -135,6 +142,8 @@ class MetricsCalculator:
                 max_consecutive_wins=max_consec_wins,
                 max_consecutive_losses=max_consec_losses,
                 profit_factor=profit_factor,
+                risk_percent_min=risk_percent_min,
+                risk_percent_max=risk_percent_max,
             ),
             trades=trades,
         )

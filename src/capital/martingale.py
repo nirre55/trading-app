@@ -44,12 +44,16 @@ class MartingaleCapitalManager(BaseCapitalManager):
 
     def _effective_risk_percent(self) -> float:
         """Retourne le risk_percent effectif plafonné à max_steps (FR44, FR45, FR46)."""
-        factor = self._config.factor or 1.0
+        factor = self._config.factor if self._config.factor is not None else 1.0
         if self._config.max_steps is not None:
             steps = min(self._consecutive_count, self._config.max_steps)
         else:
             steps = self._consecutive_count
         return self._config.risk_percent * (factor**steps)
+
+    def get_current_risk_percent(self) -> float | None:
+        """Retourne le risk_percent effectif adaptatif courant (FR44, FR45, FR46)."""
+        return self._effective_risk_percent()
 
     def record_trade_result(self, won: bool) -> None:
         """Enregistre le résultat d'un trade et met à jour l'état de la séquence.

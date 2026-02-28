@@ -29,6 +29,10 @@ class FixedPercentCapitalManager(BaseCapitalManager):
         self._market_rules = market_rules
         self._validator = OrderValidator(market_rules)
 
+    def get_current_risk_percent(self) -> float | None:
+        """Retourne le risk_percent fixe configuré."""
+        return self._risk_percent
+
     def calculate_position_size(
         self,
         balance: Decimal,

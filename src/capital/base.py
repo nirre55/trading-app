@@ -44,3 +44,14 @@ class BaseCapitalManager(ABC):
         Args:
             won: True si le trade est un gain, False si c'est une perte.
         """
+
+    def get_current_risk_percent(self) -> float | None:
+        """Retourne le risk_percent effectif courant, ou None si non disponible.
+
+        Implémentation par défaut : None (les stratégies n'exposant pas leur risque courant).
+        Les stratégies concrètes surchargent cette méthode pour exposer le risk_percent utilisé.
+
+        Returns:
+            risk_percent courant en pourcentage (ex: 2.0 = 2%), ou None.
+        """
+        return None

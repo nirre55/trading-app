@@ -81,6 +81,7 @@ class TradeSimulator:
     async def _open_trade_sim(self, event: StrategyEvent, direction: TradeDirection) -> None:
         if event.signal_price is None or event.sl_price is None:
             return  # Garanti non-None par les handlers appelants ; garde pour mypy et sécurité
+        current_risk_pct = self._capital_manager.get_current_risk_percent()
         quantity = self._capital_manager.calculate_position_size(
             self._balance, event.signal_price, event.sl_price
         )
@@ -97,6 +98,7 @@ class TradeSimulator:
             quantity=quantity,
             status=TradeStatus.OPEN,
             capital_before=self._balance,
+            risk_percent=current_risk_pct,
         )
         await self._event_bus.emit(
             EventType.TRADE_OPENED,
@@ -154,6 +156,7 @@ class TradeSimulator:
             duration = timedelta(0)
         else:
             duration = datetime.now(timezone.utc) - trade.timestamp
+        won = close_event_type == EventType.TRADE_TP_HIT
         result = TradeResult(
             trade_id=str(trade.id),
             pair=trade.pair,
@@ -167,9 +170,11 @@ class TradeSimulator:
             duration=duration,
             capital_before=trade.capital_before,
             capital_after=self._balance,
+            risk_percent=trade.risk_percent,
         )
         self._closed_trades.append(result)
         self._open_trade = None
+        self._capital_manager.record_trade_result(won)
         await self._event_bus.emit(
             close_event_type,
             TradeEvent(

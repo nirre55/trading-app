@@ -1,5 +1,7 @@
 """Modèles Pydantic pour les trades et ordres."""
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
@@ -42,6 +44,7 @@ class TradeRecord(BaseModel):
     )
     status: TradeStatus
     capital_before: Decimal
+    risk_percent: float | None = None
 
 
 class TradeResult(BaseModel):
@@ -64,3 +67,4 @@ class TradeResult(BaseModel):
     )
     capital_before: Decimal
     capital_after: Decimal
+    risk_percent: float | None = None

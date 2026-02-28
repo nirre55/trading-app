@@ -22,6 +22,7 @@ def make_trade(
     pnl: Decimal,
     capital_before: Decimal = Decimal("10000"),
     direction: TradeDirection = TradeDirection.LONG,
+    risk_percent: float | None = None,
 ) -> TradeResult:
     """Fabrique un TradeResult minimal pour les tests."""
     capital_after = capital_before + pnl
@@ -39,6 +40,7 @@ def make_trade(
         timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         capital_before=capital_before,
         capital_after=capital_after,
+        risk_percent=risk_percent,
     )
 
 
@@ -284,6 +286,57 @@ def test_export_json_inf_profit_factor_becomes_null(
 
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["metrics"]["profit_factor"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — risk_percent min/max (AC3 Story 7.3)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_percent_min_max_from_trades_with_risk(calculator: MetricsCalculator) -> None:
+    """AC3 : trades avec risk_percent renseigné → risk_percent_min/max calculés correctement."""
+    trades = [
+        make_trade(Decimal("100"), risk_percent=1.0),
+        make_trade(Decimal("-50"), risk_percent=2.0),
+        make_trade(Decimal("200"), risk_percent=4.0),
+    ]
+    result = calculator.compute(trades)
+
+    assert result.metrics.risk_percent_min == pytest.approx(1.0)
+    assert result.metrics.risk_percent_max == pytest.approx(4.0)
+
+
+def test_risk_percent_min_max_none_when_no_risk_percent(calculator: MetricsCalculator) -> None:
+    """AC3 : trades sans risk_percent (None) → risk_percent_min/max sont None."""
+    trades = [
+        make_trade(Decimal("100")),  # risk_percent=None par défaut
+        make_trade(Decimal("-50")),
+    ]
+    result = calculator.compute(trades)
+
+    assert result.metrics.risk_percent_min is None
+    assert result.metrics.risk_percent_max is None
+
+
+def test_risk_percent_min_max_none_when_empty_trades(calculator: MetricsCalculator) -> None:
+    """AC3 : liste vide → risk_percent_min/max sont None."""
+    result = calculator.compute([])
+
+    assert result.metrics.risk_percent_min is None
+    assert result.metrics.risk_percent_max is None
+
+
+def test_risk_percent_all_same_value(calculator: MetricsCalculator) -> None:
+    """AC3 : tous les trades ont le même risk_percent → min == max."""
+    trades = [
+        make_trade(Decimal("100"), risk_percent=1.5),
+        make_trade(Decimal("-30"), risk_percent=1.5),
+        make_trade(Decimal("80"), risk_percent=1.5),
+    ]
+    result = calculator.compute(trades)
+
+    assert result.metrics.risk_percent_min == pytest.approx(1.5)
+    assert result.metrics.risk_percent_max == pytest.approx(1.5)
 
 
 def test_export_json_decimal_fields_as_strings(

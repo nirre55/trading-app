@@ -15,7 +15,7 @@ from src.backtest.data_downloader import DataDownloader
 from src.backtest.metrics import BacktestResult, MetricsCalculator
 from src.backtest.replay_engine import ReplayEngine
 from src.backtest.trade_simulator import TradeSimulator
-from src.capital.fixed_percent import FixedPercentCapitalManager
+from src.capital.factory import create_capital_manager
 from src.core.backup import LogBackupService
 from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
@@ -416,6 +416,7 @@ class TradingApp:
         end_dt: datetime,
         output_path: Path | None = None,
         config_path: Path | None = None,
+        initial_capital: Decimal = Decimal("10000"),
     ) -> BacktestResult:
         """Orchestre un backtest complet : téléchargement → replay → métriques (FR21-FR26).
 
@@ -425,6 +426,7 @@ class TradingApp:
             end_dt: Date/heure de fin (TZ-aware UTC).
             output_path: Chemin pour exporter les résultats en JSON (optionnel).
             config_path: Chemin vers le fichier de configuration (optionnel).
+            initial_capital: Capital de départ du backtest en USDT (défaut : 10000).
         """
         await self.start(config_path=config_path, strategy_name=strategy_name)
         if self.config is None or self.strategy_config is None or self.event_bus is None:
@@ -435,11 +437,10 @@ class TradingApp:
         downloader = DataDownloader(data_dir / "historical")
         replay_engine = ReplayEngine(downloader, self.event_bus)
 
-        capital_manager = FixedPercentCapitalManager(
-            self.strategy_config.capital.risk_percent,
+        capital_manager = create_capital_manager(
+            self.strategy_config.capital,
             _DEFAULT_BACKTEST_MARKET_RULES,
         )
-        initial_capital = Decimal("10000")
         simulator = TradeSimulator(
             self.event_bus, self.strategy_config, capital_manager, initial_capital
         )
