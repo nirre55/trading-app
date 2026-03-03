@@ -1203,3 +1203,79 @@ async def test_handle_trade_closed_log_trade_called_before_trade_closed_emit(
     assert call_order == ["log_trade", "trade_closed"], (
         f"Ordre incorrect : {call_order} — log_trade DOIT précéder TRADE_CLOSED (AC5)"
     )
+
+
+# ── Tests Story 8.2 — Champs de notification dans les événements ──────────────
+
+
+@pytest.mark.asyncio
+async def test_trade_opened_event_contient_champs_notification(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """Story 8.2 AC1 : TRADE_OPENED émet direction, entry_price, stop_loss, take_profit, quantity."""
+    received_events: list = []
+
+    async def capture(event):  # type: ignore[no-untyped-def]
+        received_events.append(event)
+
+    event_bus.on(EventType.TRADE_OPENED, capture)
+    mock_connector.place_order = AsyncMock(
+        side_effect=[
+            make_order(status=OrderStatus.FILLED, price=Decimal("50000")),
+            make_order(order_type=OrderType.STOP_LOSS, status=OrderStatus.PENDING),
+            make_order(order_type=OrderType.TAKE_PROFIT, status=OrderStatus.PENDING),
+        ]
+    )
+    await executor.execute_atomic_trade(**COMMON_PARAMS)
+
+    assert len(received_events) == 1
+    event = received_events[0]
+    assert event.direction == "LONG"
+    assert event.entry_price == Decimal("50000")
+    assert event.stop_loss is not None
+    assert event.take_profit is not None
+    assert event.quantity == Decimal("0.01")
+
+
+@pytest.mark.asyncio
+async def test_trade_closed_event_contient_duration_seconds(
+    executor: TradeExecutor,
+    mock_connector: MagicMock,
+    event_bus: EventBus,
+) -> None:
+    """Story 8.2 AC2 : TRADE_CLOSED émet duration_seconds non nul et positif."""
+    trade_id = "trade-duration-check"
+    executor._open_trades[trade_id] = TradeRecord(
+        id=trade_id,
+        pair="BTC/USDT",
+        direction=TradeDirection.LONG,
+        entry_price=Decimal("50000"),
+        stop_loss=Decimal("49000"),
+        take_profit=Decimal("52000"),
+        leverage=5,
+        quantity=Decimal("0.01"),
+        status=TradeStatus.OPEN,
+        capital_before=Decimal("1000"),
+    )
+    mock_connector.fetch_balance = AsyncMock(return_value=make_balance(free="1020"))
+
+    closed_events: list = []
+
+    async def capture(event):  # type: ignore[no-untyped-def]
+        closed_events.append(event)
+
+    event_bus.on(EventType.TRADE_CLOSED, capture)
+
+    tp_event = TradeEvent(
+        event_type=EventType.TRADE_TP_HIT,
+        trade_id=trade_id,
+        pair="BTC/USDT",
+    )
+    await executor._handle_trade_closed(tp_event)  # type: ignore[arg-type]
+
+    assert len(closed_events) == 1
+    event = closed_events[0]
+    assert event.duration_seconds is not None
+    assert event.duration_seconds >= 0

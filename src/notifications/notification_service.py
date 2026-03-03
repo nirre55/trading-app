@@ -9,6 +9,7 @@ import urllib.request
 from loguru import logger
 
 from src.models.config import TelegramConfig
+from src.models.events import TradeEvent
 
 __all__ = ["NotificationService"]
 
@@ -29,12 +30,9 @@ class NotificationService:
     un WARN est loggé mais aucune exception n'est propagée (FR51).
     """
 
-    def __init__(self, config: TelegramConfig | None) -> None:
+    def __init__(self, config: TelegramConfig | None, dry_run: bool = False) -> None:
         self._config = config
-
-    def _is_active(self) -> bool:
-        """Retourne True si Telegram est configuré et activé."""
-        return self._config is not None and self._config.enabled
+        self._dry_run = dry_run
 
     async def send_message(self, text: str) -> None:
         """Envoie un message texte via Telegram Bot API.
@@ -58,3 +56,51 @@ class NotificationService:
     async def send_startup_message(self) -> None:
         """Envoie le message de démarrage du système (AC5)."""
         await self.send_message("[OK] Système démarré")
+
+    async def notify_trade_opened(self, event: TradeEvent) -> None:
+        """Envoie une notification d'ouverture de trade (AC1, AC3, Story 8.2)."""
+        prefix = "[DRY-RUN] " if self._dry_run else ""
+        direction = event.direction or "?"
+        entry = event.entry_price or "?"
+        sl = event.stop_loss or "?"
+        tp = event.take_profit or "?"
+        qty = event.quantity or "?"
+        text = (
+            f"{prefix}Trade ouvert — {event.pair} {direction} | "
+            f"Entrée: {entry} | SL: {sl} | TP: {tp} | Taille: {qty}"
+        )
+        await self.send_message(text)
+
+    async def notify_trade_closed(self, event: TradeEvent) -> None:
+        """Envoie une notification de fermeture de trade (AC2, AC3, Story 8.2)."""
+        prefix = "[DRY-RUN] " if self._dry_run else ""
+        pnl = event.pnl or 0
+        pnl_str = f"{float(pnl):+.2f}"
+        if event.capital_before and event.capital_before != 0:
+            pnl_pct = float(pnl) / float(event.capital_before) * 100
+            pnl_pct_str = f"{pnl_pct:+.2f}%"
+        else:
+            pnl_pct_str = "N/A"
+        duration_str = _format_duration(event.duration_seconds)
+        text = (
+            f"{prefix}Trade fermé — {event.pair} | "
+            f"P&L: {pnl_str} USDT ({pnl_pct_str}) | Durée: {duration_str}"
+        )
+        await self.send_message(text)
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Formate une durée en secondes sous forme lisible (Xh Xm Xs)."""
+    if seconds is None:
+        return "N/A"
+    total = int(seconds)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m or h:
+        parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)

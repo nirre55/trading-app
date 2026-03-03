@@ -1,5 +1,7 @@
 """Modèles Pydantic pour les événements du bus d'événements."""
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
@@ -121,6 +123,13 @@ class TradeEvent(BaseEvent):
     pnl: Decimal | None = None
     capital_before: Decimal | None = None
     capital_after: Decimal | None = None
+    # Champs pour les notifications (Story 8.2)
+    direction: str | None = None
+    entry_price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
+    quantity: Decimal | None = None
+    duration_seconds: float | None = None
 
     @model_validator(mode="after")
     def check_domain(self) -> "TradeEvent":

@@ -55,6 +55,7 @@ class TradingApp:
         config_path: Path | None = None,
         strategy_name: str | None = None,
         strategies_dir: Path | None = None,
+        dry_run: bool = False,
     ) -> None:
         """Démarre l'application : charge config, logging, bus, événement.
 
@@ -62,6 +63,7 @@ class TradingApp:
             config_path: Chemin vers le fichier de configuration principal.
             strategy_name: Nom de la stratégie à charger (optionnel).
             strategies_dir: Répertoire des fichiers de stratégie (optionnel).
+            dry_run: Mode simulation — préfixe [DRY-RUN] dans les notifications Telegram (AC3, Story 9.1).
         """
         self.config = load_app_config(config_path)
 
@@ -80,7 +82,7 @@ class TradingApp:
             sensitive.append(self.config.telegram.token.get_secret_value())
         register_sensitive_values(*sensitive)
 
-        self.notification_service = NotificationService(self.config.telegram)
+        self.notification_service = NotificationService(self.config.telegram, dry_run=dry_run)
 
         if strategy_name is not None:
             self.strategy_config = load_strategy_by_name(
@@ -270,6 +272,7 @@ class TradingApp:
         strategy_name: str,
         config_path: Path | None = None,
         min_balance: Decimal = Decimal("10"),
+        dry_run: bool = False,
     ) -> None:
         """Boucle de trading live : config, health check, écoute des bougies.
 
@@ -277,8 +280,9 @@ class TradingApp:
             strategy_name: Nom de la stratégie à exécuter.
             config_path: Chemin vers le fichier de configuration (optionnel).
             min_balance: Balance minimale requise en USDT.
+            dry_run: Mode simulation — préfixe [DRY-RUN] dans les notifications Telegram (AC3, Story 9.1).
         """
-        await self.start(config_path=config_path, strategy_name=strategy_name)
+        await self.start(config_path=config_path, strategy_name=strategy_name, dry_run=dry_run)
         if self.config is None or self.strategy_config is None or self.event_bus is None:
             raise RuntimeError("run_live() : état interne invalide après start()")
 
@@ -364,6 +368,21 @@ class TradingApp:
                 self.event_bus.on(et, _on_strategy_event)
             for et in (EventType.TRADE_OPENED, EventType.TRADE_CLOSED):
                 self.event_bus.on(et, _on_trade_event)
+
+            # Abonnement notifications trades (Story 8.2)
+            if self.notification_service is not None:
+                ns = self.notification_service
+
+                async def _on_trade_opened_notify(event: BaseEvent) -> None:
+                    if isinstance(event, TradeEvent):
+                        await ns.notify_trade_opened(event)
+
+                async def _on_trade_closed_notify(event: BaseEvent) -> None:
+                    if isinstance(event, TradeEvent):
+                        await ns.notify_trade_closed(event)
+
+                self.event_bus.on(EventType.TRADE_OPENED, _on_trade_opened_notify)
+                self.event_bus.on(EventType.TRADE_CLOSED, _on_trade_closed_notify)
 
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)

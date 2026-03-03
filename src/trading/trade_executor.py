@@ -177,6 +177,7 @@ class TradeExecutor:
                     pnl=pnl,
                     capital_before=trade_record.capital_before,
                     capital_after=capital_after,
+                    duration_seconds=duration.total_seconds(),
                     details=(
                         f"capital_before={trade_record.capital_before} "
                         f"capital_after={capital_after} pnl={pnl}"
@@ -396,6 +397,11 @@ class TradeExecutor:
                     event_type=EventType.TRADE_OPENED,
                     trade_id=trade_id,
                     pair=pair,
+                    direction=direction.value,
+                    entry_price=real_entry_price,
+                    stop_loss=real_sl_price,
+                    take_profit=real_tp_price,
+                    quantity=quantity,
                     details=f"entry={real_entry_price} sl={real_sl_price} tp={real_tp_price} leverage={effective_leverage}",
                 ),
             )
