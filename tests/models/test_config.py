@@ -11,6 +11,7 @@ from src.models.config import (
     ExchangeConfig,
     PathsConfig,
     StrategyConfig,
+    TelegramConfig,
 )
 
 
@@ -202,3 +203,59 @@ class TestStrategyConfig:
         json_str = config.model_dump_json()
         assert "ma_strategie" in json_str
         assert "BTC/USDT" in json_str
+
+
+class TestTelegramConfig:
+    """Tests pour TelegramConfig (Story 8.1)."""
+
+    def test_instanciation_valide_enabled(self):
+        config = TelegramConfig(enabled=True, token="bot123:AAAA", chat_id="123456")
+        assert config.enabled is True
+        assert config.chat_id == "123456"
+        assert isinstance(config.token, SecretStr)
+        assert config.token.get_secret_value() == "bot123:AAAA"
+
+    def test_token_masque_dans_repr(self):
+        config = TelegramConfig(enabled=True, token="super_secret_token", chat_id="123")
+        assert "super_secret_token" not in repr(config)
+
+    def test_valeurs_par_defaut(self):
+        config = TelegramConfig()
+        assert config.enabled is False
+        assert config.chat_id == ""
+
+    def test_app_config_sans_telegram(self):
+        data = {
+            "exchange": {"name": "binance", "api_key": "k", "api_secret": "s"},
+            "paths": {"logs": "data/logs", "trades": "data/trades", "state": "data/state"},
+            "defaults": {},
+        }
+        config = AppConfig(**data)
+        assert config.telegram is None
+
+    def test_app_config_avec_telegram_valide(self):
+        data = {
+            "exchange": {"name": "binance", "api_key": "k", "api_secret": "s"},
+            "paths": {"logs": "data/logs", "trades": "data/trades", "state": "data/state"},
+            "defaults": {},
+            "telegram": {"enabled": True, "token": "bot123:AAAA", "chat_id": "999"},
+        }
+        config = AppConfig(**data)
+        assert config.telegram is not None
+        assert config.telegram.enabled is True
+        assert config.telegram.chat_id == "999"
+
+    def test_telegram_config_enabled_token_vide_raise_validation_error(self):
+        """L2 : enabled=True avec token vide → ValidationError explicite."""
+        with pytest.raises(ValidationError, match="token.*chat_id.*requis"):
+            TelegramConfig(enabled=True, token="", chat_id="999")
+
+    def test_telegram_config_enabled_chat_id_vide_raise_validation_error(self):
+        """L2 : enabled=True avec chat_id vide → ValidationError explicite."""
+        with pytest.raises(ValidationError, match="token.*chat_id.*requis"):
+            TelegramConfig(enabled=True, token="bot123:AAAA", chat_id="")
+
+    def test_telegram_config_disabled_token_vide_accepte(self):
+        """L2 : enabled=False avec token/chat_id vides → pas d'erreur (désactivé)."""
+        config = TelegramConfig(enabled=False, token="", chat_id="")
+        assert config.enabled is False

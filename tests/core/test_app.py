@@ -119,6 +119,73 @@ class TestTradingApp:
         with pytest.raises(ConfigError, match="introuvable"):
             await app.start(config_path=tmp_path / "nonexistent.yaml")
 
+    @pytest.mark.asyncio
+    async def test_trading_app_start_avec_telegram_cree_notification_service(self, tmp_path: Path):
+        """Task 3.2 : start() avec Telegram activé → NotificationService instancié."""
+        logs_dir = (tmp_path / "logs").as_posix()
+        trades_dir = (tmp_path / "trades").as_posix()
+        state_file = (tmp_path / "state.json").as_posix()
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            f"""
+exchange:
+  name: "binance"
+  api_key: "test_key_123"
+  api_secret: "test_secret_456"
+  testnet: true
+paths:
+  logs: "{logs_dir}"
+  trades: "{trades_dir}"
+  state: "{state_file}"
+defaults:
+  log_level: "INFO"
+telegram:
+  enabled: true
+  token: "bot123:AAAA"
+  chat_id: "999"
+""",
+            encoding="utf-8",
+        )
+        app = TradingApp()
+        await app.start(config_path=config_file)
+        assert app.notification_service is not None
+
+    @pytest.mark.asyncio
+    async def test_trading_app_start_avec_telegram_enregistre_token(self, tmp_path: Path):
+        """AC3 (intégration) : start() avec Telegram activé → token filtré des logs."""
+        from src.core.logging import _sanitize_message
+
+        token = "bot999:UNIQUE_SECRET_TOKEN_8_1"
+        logs_dir = (tmp_path / "logs").as_posix()
+        trades_dir = (tmp_path / "trades").as_posix()
+        state_file = (tmp_path / "state.json").as_posix()
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            f"""
+exchange:
+  name: "binance"
+  api_key: "test_key_123"
+  api_secret: "test_secret_456"
+  testnet: true
+paths:
+  logs: "{logs_dir}"
+  trades: "{trades_dir}"
+  state: "{state_file}"
+defaults:
+  log_level: "INFO"
+telegram:
+  enabled: true
+  token: "{token}"
+  chat_id: "999"
+""",
+            encoding="utf-8",
+        )
+        app = TradingApp()
+        await app.start(config_path=config_file)
+        sanitized = _sanitize_message(f"token actif : {token}")
+        assert token not in sanitized
+        assert "***" in sanitized
+
 
 def _make_balance(free: Decimal = Decimal("100")) -> Balance:
     """Helper : crée une Balance valide avec free = total."""
@@ -169,6 +236,20 @@ class TestRunHealthCheck:
         mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("10")))
 
         await app.run_health_check(mock_conn, min_balance=Decimal("10"))
+
+    @pytest.mark.asyncio
+    async def test_health_check_appelle_send_startup_message(self):
+        """AC5 : run_health_check() appelle send_startup_message() quand notification_service fourni."""
+        app = TradingApp()
+        mock_conn = MagicMock()
+        mock_conn.connect = AsyncMock()
+        mock_conn.fetch_balance = AsyncMock(return_value=_make_balance(Decimal("100")))
+        mock_notif = MagicMock()
+        mock_notif.send_startup_message = AsyncMock()
+
+        await app.run_health_check(mock_conn, min_balance=Decimal("10"), notification_service=mock_notif)
+
+        mock_notif.send_startup_message.assert_called_once()
 
 
 class TestRunLiveStateUpdates:

@@ -11,6 +11,7 @@ __all__ = [
     "ExchangeConfig",
     "PathsConfig",
     "DefaultsConfig",
+    "TelegramConfig",
     "AppConfig",
     "ConditionConfig",
     "CapitalConfig",
@@ -53,6 +54,24 @@ class DefaultsConfig(BaseModel):
     backup_interval_hours: int = Field(default=24, gt=0)
 
 
+class TelegramConfig(BaseModel):
+    """Configuration du service de notifications Telegram (optionnel)."""
+
+    model_config = ConfigDict(strict=False, frozen=False)
+
+    enabled: bool = False
+    token: SecretStr = SecretStr("")
+    chat_id: str = ""
+
+    @model_validator(mode="after")
+    def _validate_enabled_fields(self) -> TelegramConfig:
+        if self.enabled and (not self.token.get_secret_value() or not self.chat_id):
+            raise ValueError(
+                "TelegramConfig : 'token' et 'chat_id' sont requis quand 'enabled' est True"
+            )
+        return self
+
+
 class AppConfig(BaseModel):
     """Configuration principale de l'application."""
 
@@ -61,6 +80,7 @@ class AppConfig(BaseModel):
     exchange: ExchangeConfig
     paths: PathsConfig
     defaults: DefaultsConfig
+    telegram: TelegramConfig | None = None
 
 
 class ConditionConfig(BaseModel):

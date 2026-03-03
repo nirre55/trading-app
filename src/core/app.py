@@ -25,6 +25,7 @@ from src.core.state_manager import StateManager
 from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
+from src.notifications.notification_service import NotificationService
 from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, StrategyEvent, TradeEvent
 from src.models.exchange import MarketRules, OrderSide, OrderType
 from src.models.state import AppState, StrategyState, StrategyStateEnum
@@ -47,6 +48,7 @@ class TradingApp:
         self.config: AppConfig | None = None
         self.strategy_config: StrategyConfig | None = None
         self.event_bus: EventBus | None = None
+        self.notification_service: NotificationService | None = None
 
     async def start(
         self,
@@ -74,7 +76,11 @@ class TradingApp:
         ]
         if self.config.exchange.password is not None:
             sensitive.append(self.config.exchange.password.get_secret_value())
+        if self.config.telegram is not None and self.config.telegram.enabled:
+            sensitive.append(self.config.telegram.token.get_secret_value())
         register_sensitive_values(*sensitive)
+
+        self.notification_service = NotificationService(self.config.telegram)
 
         if strategy_name is not None:
             self.strategy_config = load_strategy_by_name(
@@ -94,12 +100,14 @@ class TradingApp:
         self,
         connector: CcxtConnector,
         min_balance: Decimal = Decimal("10"),
+        notification_service: NotificationService | None = None,
     ) -> None:
         """Health check complet : connexion, API key, balance (FR39).
 
         Args:
             connector: Connecteur exchange à vérifier.
             min_balance: Balance minimale requise (USDT).
+            notification_service: Service de notifications optionnel pour le message de démarrage.
         """
         logger.info("🔍 Health check démarré...")
         await connector.connect()
@@ -113,6 +121,8 @@ class TradingApp:
             )
         logger.info("✓ Balance suffisante ({} {})", balance.free, balance.currency)
         logger.info("✅ Health check réussi — système prêt")
+        if notification_service is not None:
+            await notification_service.send_startup_message()
 
     async def run_crash_recovery(
         self,
@@ -296,7 +306,7 @@ class TradingApp:
                 self.strategy_config.pair,
                 self.strategy_config.timeframe,
             )
-            await self.run_health_check(connector, min_balance)
+            await self.run_health_check(connector, min_balance, self.notification_service)
 
             # Création du StateManager avant crash recovery
             state_manager = StateManager(state_file)
