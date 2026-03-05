@@ -24,6 +24,7 @@ from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, Orde
 
 __all__ = ["CcxtConnector"]
 
+_PROLONGED_DISCONNECTION_THRESHOLD_S = 60.0
 MAX_RECONNECT_ATTEMPTS = 5
 INITIAL_RECONNECT_DELAY = 2.0
 MAX_RECONNECT_DELAY = 30.0
@@ -231,6 +232,9 @@ class CcxtConnector(BaseExchangeConnector):
 
     async def _reconnect(self) -> None:
         """Tente la reconnexion avec backoff exponentiel."""
+        cumulative_delay = 0.0
+        prolonged_notified = False
+
         for attempt in range(MAX_RECONNECT_ATTEMPTS):
             delay = min(INITIAL_RECONNECT_DELAY * (2 ** attempt), MAX_RECONNECT_DELAY)
             self._reconnect_attempts = attempt + 1
@@ -244,6 +248,18 @@ class CcxtConnector(BaseExchangeConnector):
             )
 
             await asyncio.sleep(delay)
+            cumulative_delay += delay
+
+            if not prolonged_notified and cumulative_delay >= _PROLONGED_DISCONNECTION_THRESHOLD_S:
+                prolonged_notified = True
+                await self._event_bus.emit(
+                    EventType.EXCHANGE_DISCONNECTED_PROLONGED,
+                    ExchangeEvent(
+                        event_type=EventType.EXCHANGE_DISCONNECTED_PROLONGED,
+                        exchange_name=self._exchange_name,
+                        details=f"Déconnexion prolongée de {self._exchange_name} (>{_PROLONGED_DISCONNECTION_THRESHOLD_S:.0f}s)",
+                    ),
+                )
 
             try:
                 await self._exchange.load_markets()

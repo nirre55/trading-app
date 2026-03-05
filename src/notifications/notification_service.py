@@ -9,7 +9,7 @@ import urllib.request
 from loguru import logger
 
 from src.models.config import TelegramConfig
-from src.models.events import TradeEvent
+from src.models.events import ErrorEvent, TradeEvent
 
 __all__ = ["NotificationService"]
 
@@ -70,6 +70,25 @@ class NotificationService:
             f"Entrée: {entry} | SL: {sl} | TP: {tp} | Taille: {qty}"
         )
         await self.send_message(text)
+
+    async def notify_critical_error(self, event: ErrorEvent) -> None:
+        """Envoie une alerte Telegram en cas d'erreur critique (AC1, Story 8.3)."""
+        message = event.message[:200] if len(event.message) > 200 else event.message
+        await self.send_message(f"[CRITICAL] {event.error_type} — {message}")
+
+    async def notify_recovery(self) -> None:
+        """Envoie une notification de recovery après crash (AC2, Story 8.3)."""
+        await self.send_message(
+            "[RECOVERY] Système redémarré — vérification des positions en cours"
+        )
+
+    async def notify_prolonged_disconnection(self) -> None:
+        """Envoie une alerte de déconnexion prolongée (AC3, Story 8.3)."""
+        await self.send_message("[WARN] Déconnexion prolongée de l'exchange")
+
+    async def notify_shutdown(self) -> None:
+        """Envoie une notification d'arrêt propre du système (AC4, Story 8.3)."""
+        await self.send_message("[OK] Système arrêté proprement")
 
     async def notify_trade_closed(self, event: TradeEvent) -> None:
         """Envoie une notification de fermeture de trade (AC2, AC3, Story 8.2)."""

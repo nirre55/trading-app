@@ -31,8 +31,8 @@ class TestEventType:
         domaines = {et.value.split(".")[0] for et in EventType}
         assert domaines == {"app", "exchange", "candle", "strategy", "trade", "error"}
 
-    def test_17_types_au_total(self):
-        assert len(EventType) == 17
+    def test_19_types_au_total(self):
+        assert len(EventType) == 19
 
     def test_valeurs_specifiques(self):
         assert EventType.APP_STARTED == "app.started"

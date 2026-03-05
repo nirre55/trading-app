@@ -15,10 +15,12 @@ class EventType(StrEnum):
     # Domaine app
     APP_STARTED = "app.started"
     APP_STOPPED = "app.stopped"
+    APP_RECOVERY = "app.recovery"
 
     # Domaine exchange
     EXCHANGE_CONNECTED = "exchange.connected"
     EXCHANGE_DISCONNECTED = "exchange.disconnected"
+    EXCHANGE_DISCONNECTED_PROLONGED = "exchange.disconnected_prolonged"
     EXCHANGE_RECONNECTED = "exchange.reconnected"
 
     # Domaine candle

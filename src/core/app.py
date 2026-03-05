@@ -26,7 +26,7 @@ from src.core.logging import register_sensitive_values, setup_logging
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
 from src.notifications.notification_service import NotificationService
-from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, StrategyEvent, TradeEvent
+from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, ExchangeEvent, StrategyEvent, TradeEvent
 from src.models.exchange import MarketRules, OrderSide, OrderType
 from src.models.state import AppState, StrategyState, StrategyStateEnum
 
@@ -267,6 +267,34 @@ class TradingApp:
         except Exception as exc:
             logger.error("❌ Impossible de vérifier les TP/SL avant arrêt : {}", exc)
 
+    def _register_notification_subscriptions(self, ns: NotificationService) -> None:
+        """Enregistre les abonnements du NotificationService sur le bus d'événements (Story 8.3).
+
+        Extrait de run_live() pour être testable indépendamment.
+        """
+        assert self.event_bus is not None
+
+        async def _on_error_critical_notify(event: BaseEvent) -> None:
+            if isinstance(event, ErrorEvent):
+                await ns.notify_critical_error(event)
+
+        async def _on_app_recovery_notify(event: BaseEvent) -> None:
+            if isinstance(event, AppEvent):
+                await ns.notify_recovery()
+
+        async def _on_prolonged_disconnection_notify(event: BaseEvent) -> None:
+            if isinstance(event, ExchangeEvent):
+                await ns.notify_prolonged_disconnection()
+
+        async def _on_app_stopped_notify(event: BaseEvent) -> None:
+            if isinstance(event, AppEvent):
+                await ns.notify_shutdown()
+
+        self.event_bus.on(EventType.ERROR_CRITICAL, _on_error_critical_notify)
+        self.event_bus.on(EventType.APP_RECOVERY, _on_app_recovery_notify)
+        self.event_bus.on(EventType.EXCHANGE_DISCONNECTED_PROLONGED, _on_prolonged_disconnection_notify)
+        self.event_bus.on(EventType.APP_STOPPED, _on_app_stopped_notify)
+
     async def run_live(
         self,
         strategy_name: str,
@@ -303,6 +331,7 @@ class TradingApp:
         # que lock.release() s'exécute même si CcxtConnector() lève avant le try (FR40)
         connector: CcxtConnector | None = None
         app_state: AppState | None = None  # Accessible dans finally pour _verify_tpsl_on_shutdown
+        _clean_exit = False
         try:
             connector = CcxtConnector(
                 self.config.exchange,
@@ -384,6 +413,16 @@ class TradingApp:
                 self.event_bus.on(EventType.TRADE_OPENED, _on_trade_opened_notify)
                 self.event_bus.on(EventType.TRADE_CLOSED, _on_trade_closed_notify)
 
+                # Abonnements notifications erreurs/recovery (Story 8.3)
+                self._register_notification_subscriptions(ns)
+
+            # Émission APP_RECOVERY si recovery détectée (AC2, Story 8.3) — après les abonnements
+            if recovered_state is not None:
+                await self.event_bus.emit(
+                    EventType.APP_RECOVERY,
+                    AppEvent(event_type=EventType.APP_RECOVERY),
+                )
+
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
 
@@ -424,6 +463,7 @@ class TradingApp:
                     await backup_task
                 except asyncio.CancelledError:
                     pass
+            _clean_exit = True
         finally:
             # AC2 : vérification TP/SL avant fermeture — logge l'état des positions (FR41)
             if connector is not None and app_state is not None:
@@ -432,10 +472,11 @@ class TradingApp:
                 await connector.disconnect()
             lock.release()
             stop_flag.unlink(missing_ok=True)
-            await self.event_bus.emit(
-                EventType.APP_STOPPED,
-                AppEvent(event_type=EventType.APP_STOPPED),
-            )
+            if _clean_exit:
+                await self.event_bus.emit(
+                    EventType.APP_STOPPED,
+                    AppEvent(event_type=EventType.APP_STOPPED),
+                )
             logger.info("⏹ Application arrêtée proprement")
 
     async def run_backtest(
