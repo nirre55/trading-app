@@ -109,7 +109,7 @@ class TestTokenAbsentDesLogs:
     def test_token_masque_par_sanitize_message(self):
         from src.core.logging import _sanitize_message, register_sensitive_values
 
-        token = "8614844713:AAHNvHsBNLtFKbYPmx84tTvBJOSTaFLhNhU"
+        token = "1234567890:AAFakeTokenForTestingPurposesOnly000"
         register_sensitive_values(token)
         msg = f"Connexion Telegram avec token {token} active"
         sanitized = _sanitize_message(msg)
