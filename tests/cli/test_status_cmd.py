@@ -62,6 +62,46 @@ class TestStatusCommand:
             assert "Trades actifs" in result.output
             assert "IN_TRADE" in result.output
 
+    def test_status_dry_run_shows_dry_run_label(self, tmp_path):
+        """AC5 : Quand dry_run=True dans state.json, l'output affiche [DRY-RUN]."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({
+                "uptime_start": datetime.now(timezone.utc).isoformat(),
+                "active_trades": [],
+                "strategy_states": {"ma-strat": {"state": "IDLE"}},
+                "dry_run": True,
+            })
+        )
+        with patch("src.cli.status.load_app_config") as mock_cfg:
+            mock_c = MagicMock()
+            mock_c.paths.state = str(state_file)
+            mock_cfg.return_value = mock_c
+            runner = CliRunner()
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "[DRY-RUN]" in result.output
+
+    def test_status_live_mode_no_dry_run_label(self, tmp_path):
+        """AC6 : Sans dry_run dans state.json, [DRY-RUN] n'est pas affiché."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({
+                "uptime_start": datetime.now(timezone.utc).isoformat(),
+                "active_trades": [],
+                "strategy_states": {},
+                "dry_run": False,
+            })
+        )
+        with patch("src.cli.status.load_app_config") as mock_cfg:
+            mock_c = MagicMock()
+            mock_c.paths.state = str(state_file)
+            mock_cfg.return_value = mock_c
+            runner = CliRunner()
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "[DRY-RUN]" not in result.output
+
     def test_status_fallback_when_config_error(self, tmp_path):
         with patch("src.cli.status.load_app_config", side_effect=ConfigError("config error")):
             runner = CliRunner()

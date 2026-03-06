@@ -23,13 +23,14 @@ def trade():
 @trade.command()
 @click.option("--strategy", "-s", required=True, help="Nom de la stratégie à exécuter.")
 @click.option("--min-balance", default=10.0, help="Balance minimale requise en USDT.")
+@click.option("--dry-run", is_flag=True, default=False, help="Mode simulation — aucun ordre réel envoyé.")
 @click.pass_context
-def start(ctx, strategy, min_balance):
+def start(ctx, strategy, min_balance, dry_run):
     """Démarre une stratégie de trading avec health check complet."""
     config_path = Path(ctx.obj["CONFIG_PATH"]) if ctx.obj.get("CONFIG_PATH") else None
     app = TradingApp()
     try:
-        asyncio.run(app.run_live(strategy, config_path=config_path, min_balance=Decimal(str(min_balance))))
+        asyncio.run(app.run_live(strategy, config_path=config_path, min_balance=Decimal(str(min_balance)), dry_run=dry_run))
     except ConfigError as e:
         click.echo(f"[ERREUR] Erreur de configuration : {e}", err=True)
         raise SystemExit(1) from e

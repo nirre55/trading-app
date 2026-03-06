@@ -29,6 +29,8 @@ from src.notifications.notification_service import NotificationService
 from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, ExchangeEvent, StrategyEvent, TradeEvent
 from src.models.exchange import MarketRules, OrderSide, OrderType
 from src.models.state import AppState, StrategyState, StrategyStateEnum
+from src.trading.mock_executor import MockExecutor
+from src.trading.trade_logger import TradeLogger
 
 # Market rules par défaut pour le backtest (pas de fetching exchange en mode simulation)
 _DEFAULT_BACKTEST_MARKET_RULES = MarketRules(
@@ -295,6 +297,23 @@ class TradingApp:
         self.event_bus.on(EventType.EXCHANGE_DISCONNECTED_PROLONGED, _on_prolonged_disconnection_notify)
         self.event_bus.on(EventType.APP_STOPPED, _on_app_stopped_notify)
 
+    @staticmethod
+    def _print_dry_run_summary(summary: dict) -> None:
+        """Affiche le résumé de la session dry-run sur stdout (AC6, Story 9.2).
+
+        Extrait de run_live() pour être testable indépendamment.
+        """
+        print("[DRY-RUN] === Résumé de la session ===")
+        ic = summary["initial_capital"]
+        fc = summary["final_capital"]
+        pnl = summary["pnl_total"]
+        tc = summary["trades_count"]
+        print(f"  Capital initial : {ic} USDT" if ic is not None else "  Capital initial : N/A")
+        print(f"  Capital final   : {fc} USDT" if fc is not None else "  Capital final   : N/A")
+        sign = "+" if pnl >= 0 else ""
+        print(f"  P&L total       : {sign}{pnl:.2f} USDT")
+        print(f"  Trades simulés  : {tc}")
+
     async def run_live(
         self,
         strategy_name: str,
@@ -331,6 +350,7 @@ class TradingApp:
         # que lock.release() s'exécute même si CcxtConnector() lève avant le try (FR40)
         connector: CcxtConnector | None = None
         app_state: AppState | None = None  # Accessible dans finally pour _verify_tpsl_on_shutdown
+        mock_executor: MockExecutor | None = None
         _clean_exit = False
         try:
             connector = CcxtConnector(
@@ -349,6 +369,7 @@ class TradingApp:
                 connector, state_manager, self.strategy_config.pair
             )
             app_state = recovered_state if recovered_state is not None else AppState()
+            app_state.dry_run = dry_run
             state_manager.save(app_state)
 
             # Abonnements bus — mise à jour de app_state sur événements strategy/trade (Task 5.2)
@@ -423,6 +444,22 @@ class TradingApp:
                     AppEvent(event_type=EventType.APP_RECOVERY),
                 )
 
+            # Mode dry-run : instanciation MockExecutor (AC1, Story 9.1)
+            if dry_run:
+                data_dir_trades = Path(self.config.paths.trades)
+                trade_logger = TradeLogger(data_dir_trades)
+                capital_manager = create_capital_manager(
+                    self.strategy_config.capital,
+                    _DEFAULT_BACKTEST_MARKET_RULES,
+                )
+                mock_executor = MockExecutor(
+                    connector=connector,
+                    event_bus=self.event_bus,
+                    config=self.strategy_config,
+                    capital_manager=capital_manager,
+                    trade_logger=trade_logger,
+                )
+
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
 
@@ -465,8 +502,14 @@ class TradingApp:
                     pass
             _clean_exit = True
         finally:
-            # AC2 : vérification TP/SL avant fermeture — logge l'état des positions (FR41)
-            if connector is not None and app_state is not None:
+            # Arrêt du MockExecutor si actif (dry-run)
+            if mock_executor is not None:
+                await mock_executor.stop()
+                # AC6 (Story 9.2) : résumé final de la session dry-run
+                self._print_dry_run_summary(mock_executor.get_summary())
+            # Vérification TP/SL avant fermeture — uniquement en mode live (FR41)
+            # En dry-run, aucun ordre réel n'a été placé : l'appel serait trompeur
+            if connector is not None and app_state is not None and mock_executor is None:
                 await self._verify_tpsl_on_shutdown(connector, app_state)
             if connector is not None:
                 await connector.disconnect()

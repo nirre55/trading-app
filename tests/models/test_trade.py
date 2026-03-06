@@ -166,3 +166,15 @@ class TestTradeResult:
         assert restored.timestamp == original.timestamp
         assert restored.capital_before == original.capital_before
         assert restored.capital_after == original.capital_after
+
+    def test_dry_run_defaut_false(self):
+        """AC3 (Story 9.2) : dry_run vaut False par défaut."""
+        result = TradeResult(**self._valid_trade_result_dict())
+        assert result.dry_run is False
+
+    def test_dry_run_true_persiste_en_json(self):
+        """AC3 (Story 9.2) : dry_run=True est sérialisé en JSON et visible dans model_dump."""
+        result = TradeResult(**{**self._valid_trade_result_dict(), "dry_run": True})
+        assert result.dry_run is True
+        record = result.model_dump(mode="json")
+        assert record["dry_run"] is True

@@ -63,6 +63,36 @@ class TestTradeStart:
             assert result.exit_code == 1
 
 
+    def test_trade_start_dry_run_flag_passes_to_run_live(self):
+        """AC1 : --dry-run est passé à run_live() avec dry_run=True."""
+        with patch("src.cli.trade.TradingApp") as MockApp:
+            mock_app = MagicMock()
+            mock_app.run_live = AsyncMock(return_value=None)
+            MockApp.return_value = mock_app
+            runner = CliRunner()
+            result = runner.invoke(cli, ["trade", "start", "--strategy", "test", "--dry-run"])
+            assert result.exit_code == 0
+            assert mock_app.run_live.call_args.kwargs["dry_run"] is True
+
+    def test_trade_start_without_dry_run_passes_false(self):
+        """AC6 : sans --dry-run, dry_run=False est passé à run_live()."""
+        with patch("src.cli.trade.TradingApp") as MockApp:
+            mock_app = MagicMock()
+            mock_app.run_live = AsyncMock(return_value=None)
+            MockApp.return_value = mock_app
+            runner = CliRunner()
+            result = runner.invoke(cli, ["trade", "start", "--strategy", "test"])
+            assert result.exit_code == 0
+            assert mock_app.run_live.call_args.kwargs["dry_run"] is False
+
+    def test_trade_start_dry_run_in_help(self):
+        """AC1 : --dry-run apparaît dans le help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["trade", "start", "--help"])
+        assert result.exit_code == 0
+        assert "--dry-run" in result.output
+
+
 class TestTradeStop:
     """Tests de la commande trade stop."""
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -103,6 +104,7 @@ class CapitalConfig(BaseModel):
     risk_reward_ratio: float
     factor: float | None = None
     max_steps: int | None = None
+    initial_balance: Decimal | None = None
 
     @model_validator(mode="after")
     def _validate_martingale_fields(self) -> CapitalConfig:

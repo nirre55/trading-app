@@ -37,6 +37,7 @@ class AppState(BaseModel):
     strategy_states: dict[str, StrategyState] = Field(default_factory=dict)
     active_trades: list[str] = Field(default_factory=list)
     last_candle_timestamp: AwareDatetime | None = None
+    dry_run: bool = False
     uptime_start: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

@@ -68,3 +68,4 @@ class TradeResult(BaseModel):
     capital_before: Decimal
     capital_after: Decimal
     risk_percent: float | None = None
+    dry_run: bool = False

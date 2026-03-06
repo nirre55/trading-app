@@ -177,6 +177,20 @@ class TestCapitalConfig:
         assert config.risk_percent == 1.0
         assert config.risk_reward_ratio == 2.0
 
+    def test_initial_balance_optionnel(self):
+        """AC1 (Story 9.2) : initial_balance est None par défaut."""
+        config = CapitalConfig(mode="fixed_percent", risk_percent=1.0, risk_reward_ratio=2.0)
+        assert config.initial_balance is None
+
+    def test_initial_balance_explicite(self):
+        """AC1 (Story 9.2) : initial_balance accepté comme Decimal."""
+        from decimal import Decimal
+        config = CapitalConfig(
+            mode="fixed_percent", risk_percent=1.0, risk_reward_ratio=2.0,
+            initial_balance=Decimal("1000")
+        )
+        assert config.initial_balance == Decimal("1000")
+
 
 class TestStrategyConfig:
     """Tests pour StrategyConfig."""

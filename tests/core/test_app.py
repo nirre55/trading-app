@@ -383,3 +383,66 @@ class TestRunLiveStateUpdates:
 
             stop_flag.touch()
             await asyncio.wait_for(live_task, timeout=3.0)
+
+
+class TestPrintDryRunSummary:
+    """Tests pour TradingApp._print_dry_run_summary (AC6, Story 9.2 — M2 fix)."""
+
+    def _make_summary(
+        self,
+        initial: str | None = "1000",
+        final: str | None = "1050",
+        pnl: str = "50",
+        count: int = 5,
+    ) -> dict:
+        from decimal import Decimal
+        return {
+            "initial_capital": Decimal(initial) if initial is not None else None,
+            "final_capital": Decimal(final) if final is not None else None,
+            "pnl_total": Decimal(pnl),
+            "trades_count": count,
+        }
+
+    def test_affiche_header(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary())
+        out = capsys.readouterr().out
+        assert "[DRY-RUN] === Résumé de la session ===" in out
+
+    def test_affiche_capital_initial(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(initial="1000"))
+        out = capsys.readouterr().out
+        assert "1000" in out
+        assert "Capital initial" in out
+
+    def test_affiche_capital_final(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(final="1050"))
+        out = capsys.readouterr().out
+        assert "1050" in out
+        assert "Capital final" in out
+
+    def test_affiche_pnl_positif_avec_signe_plus(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(pnl="50"))
+        out = capsys.readouterr().out
+        assert "+50.00" in out
+
+    def test_affiche_pnl_negatif_sans_signe_plus(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(pnl="-30"))
+        out = capsys.readouterr().out
+        assert "-30.00" in out
+        assert "+-30.00" not in out
+
+    def test_affiche_trades_count(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(count=7))
+        out = capsys.readouterr().out
+        assert "7" in out
+        assert "Trades simulés" in out
+
+    def test_capital_none_affiche_na(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(initial=None, final=None))
+        out = capsys.readouterr().out
+        assert "N/A" in out
+
+    def test_pnl_zero_affiche_signe_plus(self, capsys):
+        TradingApp._print_dry_run_summary(self._make_summary(pnl="0"))
+        out = capsys.readouterr().out
+        assert "+0.00" in out

@@ -144,3 +144,15 @@ class TestAppState:
         assert restored.strategy_states == {}
         assert restored.active_trades == []
         assert restored.last_candle_timestamp is None
+
+    def test_dry_run_defaut_false(self):
+        """AC6 : dry_run vaut False par défaut."""
+        state = AppState()
+        assert state.dry_run is False
+
+    def test_dry_run_true_persiste(self):
+        """AC5 : dry_run=True est sérialisé/désérialisé correctement."""
+        original = AppState(dry_run=True)
+        json_str = original.model_dump_json()
+        restored = AppState.model_validate_json(json_str)
+        assert restored.dry_run is True

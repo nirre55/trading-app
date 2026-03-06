@@ -45,7 +45,9 @@ def status(ctx):
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
 
-    click.echo("Statut du systeme de trading :")
+    dry_run = state_data.get("dry_run", False)
+    mode_label = " [DRY-RUN]" if dry_run else ""
+    click.echo(f"Statut du systeme de trading{mode_label} :")
     click.echo(f"  Uptime           : {hours:02d}:{minutes:02d}:{seconds:02d}")
     active_trades = state_data.get("active_trades", [])
     click.echo(f"  Trades actifs    : {len(active_trades)} {active_trades}")
