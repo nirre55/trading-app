@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -99,7 +99,7 @@ class CapitalConfig(BaseModel):
 
     model_config = ConfigDict(strict=False, frozen=False)
 
-    mode: str
+    mode: Literal["fixed_percent", "martingale", "martingale_inverse"]
     risk_percent: float
     risk_reward_ratio: float
     factor: float | None = None

@@ -120,6 +120,8 @@ class TradeSimulator:
         trade = self._open_trade
         if event.pair != trade.pair:
             return
+        if trade.entry_candle_timestamp is None:
+            trade.entry_candle_timestamp = event.timestamp
         # SL prioritaire si les deux sont touchés dans la même bougie (AC4)
         if trade.direction == TradeDirection.LONG:
             sl_hit = event.low <= trade.stop_loss
@@ -148,14 +150,12 @@ class TradeSimulator:
             gross_pnl = (trade.entry_price - exit_price) * trade.quantity
         net_pnl = gross_pnl - entry_fee - exit_fee
         self._balance = trade.capital_before + net_pnl
-        # En backtest, exit_timestamp est le timestamp de la bougie historique.
-        # trade.timestamp est wall-clock (domaines différents → durée précise impossible ici).
-        # timedelta(0) est un placeholder explicite ; calcul exact requiert entry_candle_timestamp
-        # dans TradeRecord — TODO Story 5.3+ pour métriques de durée fiables.
-        if exit_timestamp is not None:
-            duration = timedelta(0)
-        else:
+        if exit_timestamp is not None and trade.entry_candle_timestamp is not None:
+            duration = exit_timestamp - trade.entry_candle_timestamp
+        elif exit_timestamp is None:
             duration = datetime.now(timezone.utc) - trade.timestamp
+        else:
+            duration = timedelta(0)
         won = close_event_type == EventType.TRADE_TP_HIT
         result = TradeResult(
             trade_id=str(trade.id),

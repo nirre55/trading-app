@@ -45,6 +45,7 @@ class TradeRecord(BaseModel):
     status: TradeStatus
     capital_before: Decimal
     risk_percent: float | None = None
+    entry_candle_timestamp: AwareDatetime | None = None
 
 
 class TradeResult(BaseModel):

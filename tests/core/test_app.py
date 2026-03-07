@@ -63,7 +63,7 @@ conditions:
       slow: 21
 timeout_candles: 10
 capital:
-  mode: "fixed"
+  mode: "fixed_percent"
   risk_percent: 1.0
   risk_reward_ratio: 2.0
 """,
