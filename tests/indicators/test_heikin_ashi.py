@@ -40,6 +40,31 @@ CANDLES_5 = [
     make_candle_ohlc(8, 9, 7, 8),      # i=4 → Decimal(0)
 ]
 
+# Tableau de calcul HA (10 bougies) — valeurs vérifiées manuellement
+# Format: i | OHLC | HA_Close | HA_Open | direction
+#  i=0 : (10,12,9,11)  → HA_Close=10.5,  HA_Open=(10+11)/2=10.5          → None
+#  i=1 : (11,13,10,12) → HA_Close=11.5,  HA_Open=(10.5+10.5)/2=10.5      → Decimal(1) [11.5>10.5]
+#  i=2 : (12,14,11,13) → HA_Close=12.5,  HA_Open=(10.5+11.5)/2=11.0      → Decimal(1) [12.5>11.0]
+#  i=3 : (13,13,8,8)   → HA_Close=10.5,  HA_Open=(11.0+12.5)/2=11.75     → Decimal(0) [10.5<11.75]
+#  i=4 : (8,9,7,8)     → HA_Close=8.0,   HA_Open=(11.75+10.5)/2=11.125   → Decimal(0) [8.0<11.125]
+#  i=5 : (8,9,7,8)     → HA_Close=8.0,   HA_Open=(11.125+8.0)/2=9.5625   → Decimal(0) [8.0<9.5625]
+#  i=6 : (8,20,8,18)   → HA_Close=13.5,  HA_Open=(9.5625+8.0)/2=8.78125  → Decimal(1) [13.5>8.78125]
+#  i=7 : (18,22,17,21) → HA_Close=19.5,  HA_Open=(8.78125+13.5)/2=11.140625  → Decimal(1) [19.5>11.140625]
+#  i=8 : (21,22,10,10) → HA_Close=15.75, HA_Open=(11.140625+19.5)/2=15.3203125  → Decimal(1) [15.75>15.3203125]
+#  i=9 : (10,11,5,6)   → HA_Close=8.0,   HA_Open=(15.3203125+15.75)/2=15.53515625  → Decimal(0) [8.0<15.535]
+CANDLES_10 = [
+    make_candle_ohlc(10, 12, 9, 11),    # i=0 → None
+    make_candle_ohlc(11, 13, 10, 12),   # i=1 → Decimal(1)
+    make_candle_ohlc(12, 14, 11, 13),   # i=2 → Decimal(1)
+    make_candle_ohlc(13, 13, 8, 8),     # i=3 → Decimal(0)
+    make_candle_ohlc(8, 9, 7, 8),       # i=4 → Decimal(0)
+    make_candle_ohlc(8, 9, 7, 8),       # i=5 → Decimal(0)
+    make_candle_ohlc(8, 20, 8, 18),     # i=6 → Decimal(1)
+    make_candle_ohlc(18, 22, 17, 21),   # i=7 → Decimal(1)
+    make_candle_ohlc(21, 22, 10, 10),   # i=8 → Decimal(1)
+    make_candle_ohlc(10, 11, 5, 6),     # i=9 → Decimal(0)
+]
+
 
 # 3.1 — Enregistrement dans le registre
 def test_heikin_ashi_is_registered() -> None:
@@ -98,6 +123,28 @@ def test_heikin_ashi_manual_5_candles() -> None:
     indicator = HeikinAshiIndicator()
     result = indicator.compute(CANDLES_5)
     expected = [None, Decimal(1), Decimal(1), Decimal(0), Decimal(0)]
+    assert result == expected
+
+
+# 3.6b — Vérification manuelle sur 10 bougies
+def test_heikin_ashi_manual_10_candles() -> None:
+    """Vérification manuelle sur 10 bougies avec tableau HA calculé à la main.
+
+    Tableau de calcul :
+    i=0 : (10,12,9,11)  → HA_Close=10.5,  HA_Open[0]=(10+11)/2=10.5           → None
+    i=1 : (11,13,10,12) → HA_Close=11.5,  HA_Open=(10.5+10.5)/2=10.5          → Decimal(1)
+    i=2 : (12,14,11,13) → HA_Close=12.5,  HA_Open=(10.5+11.5)/2=11.0          → Decimal(1)
+    i=3 : (13,13,8,8)   → HA_Close=10.5,  HA_Open=(11.0+12.5)/2=11.75         → Decimal(0)
+    i=4 : (8,9,7,8)     → HA_Close=8.0,   HA_Open=(11.75+10.5)/2=11.125       → Decimal(0)
+    i=5 : (8,9,7,8)     → HA_Close=8.0,   HA_Open=(11.125+8.0)/2=9.5625       → Decimal(0)
+    i=6 : (8,20,8,18)   → HA_Close=13.5,  HA_Open=(9.5625+8.0)/2=8.78125      → Decimal(1)
+    i=7 : (18,22,17,21) → HA_Close=19.5,  HA_Open=(8.78125+13.5)/2=11.140625  → Decimal(1)
+    i=8 : (21,22,10,10) → HA_Close=15.75, HA_Open=(11.140625+19.5)/2=15.32031 → Decimal(1)
+    i=9 : (10,11,5,6)   → HA_Close=8.0,   HA_Open=(15.32031+15.75)/2=15.53516 → Decimal(0)
+    """
+    indicator = HeikinAshiIndicator()
+    result = indicator.compute(CANDLES_10)
+    expected = [None, Decimal(1), Decimal(1), Decimal(0), Decimal(0), Decimal(0), Decimal(1), Decimal(1), Decimal(1), Decimal(0)]
     assert result == expected
 
 

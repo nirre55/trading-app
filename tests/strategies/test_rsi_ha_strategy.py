@@ -353,6 +353,107 @@ async def test_rsi_ha_get_signal_returns_direction() -> None:
     assert strategy2.get_signal() == "short"
 
 
+# ── 4.16 Paramètres RSI personnalisés (période unique) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rsi_ha_custom_params_single_period() -> None:
+    """Config avec une seule période RSI (rsi_periods=[14]) et seuils custom.
+
+    Vérifie que la stratégie fonctionne avec n=1 RSI au lieu de 3,
+    et que le sl_lookback=3 est respecté dans le calcul du SL.
+    """
+    config = make_config_rsi_ha(
+        rsi_periods=[14],
+        rsi_oversold=[30],
+        rsi_overbought=[70],
+        sl_lookback=3,
+    )
+    strategy, sm, bus = make_strategy(config)
+
+    # Vérifier les attributs internes
+    assert strategy._rsi_periods == [14]
+    assert strategy._rsi_oversold == [30]
+    assert strategy._rsi_overbought == [70]
+    assert strategy._sl_lookback == 3
+    assert strategy._max_rsi_period == 14
+    assert strategy._history_max_size == max(14 * 10, 3)  # = 140
+
+    received: list[object] = []
+
+    async def capture(event: object) -> None:
+        received.append(event)
+
+    bus.on(EventType.STRATEGY_SIGNAL_LONG, capture)
+
+    # 20 bougies en forte baisse → RSI(14) → 0 ≤ 30 → Phase 1
+    for candle in make_downtrend_candles(20):
+        await strategy.evaluate_conditions(candle)
+
+    assert sm.state == StrategyStateEnum.WATCHING
+    assert strategy._signal_direction == "long"
+
+    # Bougie HA bullish pour Phase 2
+    recovery = make_candle_ohlc(10, 50, 10, 40)
+    await strategy.evaluate_conditions(recovery)
+
+    assert sm.state == StrategyStateEnum.SIGNAL_READY
+    assert len(received) == 1
+
+    # SL = min(low) des 3 dernières bougies (sl_lookback=3)
+    sl = strategy.get_sl_price()
+    assert sl is not None
+    assert sl == Decimal("10")
+
+
+# ── 4.17 Bornage de l'historique (_history_max_size) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rsi_ha_history_bounded() -> None:
+    """L'historique _candle_history est borné à _history_max_size pour éviter O(n²).
+
+    Avec rsi_periods=[3,5,7] : _history_max_size = max(7*10, 5) = 70.
+    Après 80 bougies, l'historique doit contenir exactement 70 bougies.
+    """
+    strategy, _, _ = make_strategy()
+
+    max_size = strategy._history_max_size  # = 70
+    assert max_size == 70  # max(7*10, 5) pour les paramètres par défaut
+
+    for candle in make_downtrend_candles(max_size + 10):
+        await strategy.evaluate_conditions(candle)
+
+    assert len(strategy._candle_history) == max_size
+
+
+# ── 4.18 Réinitialisation d'état inter-cycles ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rsi_ha_state_reset_on_new_cycle() -> None:
+    """Phase 1 réinitialise _signal_direction et _computed_sl_price en début de cycle.
+
+    Quand la stratégie est en conditions_met=0 (IDLE ou après reset),
+    les états internes doivent être remis à None avant toute évaluation.
+    """
+    strategy, sm, _ = make_strategy()
+
+    # Pré-condition : injecter un état "sale" simulant une réutilisation
+    strategy._signal_direction = "short"
+    strategy._computed_sl_price = Decimal("999")
+
+    # Envoyer une bougie en Phase 1 (conditions_met == 0) — reset doit se faire
+    # AVANT l'évaluation de la zone RSI, même si la zone n'est pas atteinte
+    candle = make_candle_ohlc(100, 101, 99, 100)  # bougie neutre, RSI insuffisant
+    await strategy.evaluate_conditions(candle)
+
+    # Les états doivent être réinitialisés puisque conditions_met == 0
+    assert strategy._signal_direction is None
+    assert strategy._computed_sl_price is None
+    assert sm.state == StrategyStateEnum.IDLE
+
+
 # ── 4.15 HA mauvaise direction → reste WATCHING ──────────────────────────────
 
 
