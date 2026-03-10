@@ -1,0 +1,36 @@
+# Stratégie RSI Multi-période + Heikin-Ashi
+# Combinaison de 3 RSI (momentum) et Heikin-Ashi (direction tendance)
+# pour détecter des retournements confirmés par deux indicateurs complémentaires.
+
+name: "rsi_ha"
+pair: "BTC/USDT"
+exchange: "binance"        # Exchange cible (binance, bitget, bybit...)
+timeframe: "1h"             # Timeframe des bougies
+leverage: 5                 # Levier utilisé (adapter au risque)
+
+conditions:
+  - type: "rsi_multi_zone"
+    params:
+      # Périodes des 3 RSI (index i correspond à oversold_levels[i] et overbought_levels[i])
+      rsi_periods: [3, 5, 7]           # Défaut : [3, 5, 7]
+
+      # Seuils oversold — signal LONG quand TOUS les RSI <= seuil respectif (bornes incluses)
+      rsi_oversold_levels: [10, 20, 30]  # RSI(3)<=10, RSI(5)<=20, RSI(7)<=30
+
+      # Seuils overbought — signal SHORT quand TOUS les RSI >= seuil respectif (bornes incluses)
+      rsi_overbought_levels: [90, 80, 70]  # RSI(3)>=90, RSI(5)>=80, RSI(7)>=70
+
+      # Nombre de bougies pour calculer le Stop-Loss (low min pour LONG / high max pour SHORT)
+      sl_lookback_candles: 5           # Défaut : 5
+
+  - type: "ha_confirmation"
+    params: {}
+
+# Timeout ignoré par cette stratégie (attente indéfinie de la confirmation HA)
+# Valeur élevée pour éviter l'erreur de validation de StrategyConfig
+timeout_candles: 9999
+
+capital:
+  mode: "fixed_percent"
+  risk_percent: 1.0          # Risque par trade en % du capital
+  risk_reward_ratio: 1.0     # TP = 1 RR (modifier à 1.2 pour 1.2 RR)
