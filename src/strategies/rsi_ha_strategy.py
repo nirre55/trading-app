@@ -115,7 +115,11 @@ class RsiHaStrategy(BaseStrategy):
                     self._signal_direction,
                     self._computed_sl_price,
                 )
-                await self._state_machine.on_all_conditions_met(self._signal_direction or "long")
+                await self._state_machine.on_all_conditions_met(
+                    self._signal_direction or "long",
+                    signal_price=candle.close,
+                    sl_price=self._computed_sl_price,
+                )
 
     def _check_rsi_zone(self) -> str | None:
         """Vérifie si les 3 RSI sont simultanément en zone oversold ou overbought."""

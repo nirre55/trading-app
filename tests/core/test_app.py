@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ import pytest
 from src.core.app import TradingApp
 from src.core.event_bus import EventBus
 from src.core.exceptions import ConfigError, InsufficientBalanceError
+from src.models.config import CapitalConfig, StrategyConfig
 from src.models.events import AppEvent, EventType, StrategyEvent, TradeEvent
 from src.models.exchange import Balance
 from src.models.state import StrategyStateEnum
@@ -446,3 +448,239 @@ class TestPrintDryRunSummary:
         TradingApp._print_dry_run_summary(self._make_summary(pnl="0"))
         out = capsys.readouterr().out
         assert "+0.00" in out
+
+
+def _make_strategy_config(name: str = "rsi_ha") -> StrategyConfig:
+    """Helper : StrategyConfig minimale pour les tests run_backtest()."""
+    return StrategyConfig(
+        name=name,
+        pair="BTC/USDT",
+        exchange="binance",
+        timeframe="1h",
+        leverage=1,
+        conditions=[],
+        timeout_candles=9999,
+        capital=CapitalConfig(mode="fixed_percent", risk_percent=1.0, risk_reward_ratio=2.0),
+    )
+
+
+def _make_app_config_mock(tmp_path: Path) -> MagicMock:
+    """Helper : AppConfig mocké pointant vers tmp_path."""
+    mock_config = MagicMock()
+    mock_config.paths.trades = str(tmp_path / "trades" / "trades.json")
+    mock_config.paths.logs = str(tmp_path / "logs")
+    mock_config.paths.state = str(tmp_path / "state.json")
+    mock_config.defaults.backup_interval_hours = 86400
+    return mock_config
+
+
+class TestRunBacktest:
+    """Tests pour run_backtest() — correctifs Story 10.4 (Bug #1/#2/#3).
+
+    Vérifie que :
+    - La stratégie est instanciée et câblée sur le bus (Bug #1)
+    - strategy.stop() est toujours appelé, même en cas d'exception (fix M1)
+    - TRADE_OPENED déclenche state_machine.on_trade_opened() (Bug #3)
+    - Le guard empêche on_trade_closed() hors état IN_TRADE (fix M2)
+    """
+
+    def _setup_app(self, tmp_path: Path) -> tuple[TradingApp, MagicMock, MagicMock]:
+        """Configure un TradingApp avec start() mocké."""
+        app = TradingApp()
+        mock_config = _make_app_config_mock(tmp_path)
+        mock_strategy_config = _make_strategy_config()
+
+        app.config = mock_config
+        app.strategy_config = mock_strategy_config
+        app.event_bus = EventBus()
+        return app, mock_config, MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_run_backtest_instancie_la_strategie_via_registry(self, tmp_path: Path):
+        """Bug #1 : run_backtest() doit récupérer la classe via StrategyRegistry.get() et l'instancier."""
+        app, _, _ = self._setup_app(tmp_path)
+        mock_strategy = MagicMock()
+        mock_strategy.stop = MagicMock()
+        mock_state_machine = MagicMock()
+        mock_state_machine.state = StrategyStateEnum.IDLE
+        mock_state_machine.on_trade_opened = AsyncMock()
+        mock_state_machine.on_trade_closed = AsyncMock()
+
+        mock_strategy_cls = MagicMock(return_value=mock_strategy)
+        mock_replay = MagicMock()
+        mock_replay.run = AsyncMock()
+        mock_simulator = MagicMock()
+        mock_simulator.closed_trades = []
+        mock_calculator = MagicMock()
+        from src.backtest.metrics import BacktestMetrics, BacktestResult
+        mock_calculator.compute.return_value = BacktestResult(
+            metrics=BacktestMetrics(
+                total_trades=0, win_rate=0.0, avg_rr=0.0, max_drawdown=0.0,
+                max_consecutive_wins=0, max_consecutive_losses=0, profit_factor=0.0,
+            ),
+            trades=[],
+        )
+
+        with (
+            patch("src.core.app.DataDownloader"),
+            patch("src.core.app.ReplayEngine", return_value=mock_replay),
+            patch("src.core.app.TradeSimulator", return_value=mock_simulator),
+            patch("src.core.app.create_capital_manager"),
+            patch("src.core.app.StateMachine", return_value=mock_state_machine),
+            patch("src.core.app.StrategyRegistry") as mock_registry,
+            patch("src.core.app.MetricsCalculator", return_value=mock_calculator),
+            patch.object(app, "start", new_callable=AsyncMock),
+        ):
+            mock_registry.get.return_value = mock_strategy_cls
+            await app.run_backtest(
+                strategy_name="rsi_ha",
+                start_dt=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_dt=datetime(2024, 12, 31, tzinfo=timezone.utc),
+            )
+
+        mock_registry.get.assert_called_once_with("rsi_ha")
+        mock_strategy_cls.assert_called_once()
+        mock_strategy.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_backtest_strategy_stop_appelee_si_exception_replay(self, tmp_path: Path):
+        """Fix M1 : strategy.stop() doit être appelé même si replay_engine.run() lève une exception."""
+        app, _, _ = self._setup_app(tmp_path)
+        mock_strategy = MagicMock()
+        mock_strategy.stop = MagicMock()
+        mock_state_machine = MagicMock()
+        mock_state_machine.state = StrategyStateEnum.IDLE
+        mock_state_machine.on_trade_opened = AsyncMock()
+        mock_state_machine.on_trade_closed = AsyncMock()
+
+        mock_strategy_cls = MagicMock(return_value=mock_strategy)
+        mock_replay = MagicMock()
+        mock_replay.run = AsyncMock(side_effect=RuntimeError("Erreur réseau simulée"))
+        mock_simulator = MagicMock()
+        mock_simulator.closed_trades = []
+
+        with (
+            patch("src.core.app.DataDownloader"),
+            patch("src.core.app.ReplayEngine", return_value=mock_replay),
+            patch("src.core.app.TradeSimulator", return_value=mock_simulator),
+            patch("src.core.app.create_capital_manager"),
+            patch("src.core.app.StateMachine", return_value=mock_state_machine),
+            patch("src.core.app.StrategyRegistry") as mock_registry,
+            patch("src.core.app.MetricsCalculator"),
+            patch.object(app, "start", new_callable=AsyncMock),
+        ):
+            mock_registry.get.return_value = mock_strategy_cls
+            with pytest.raises(RuntimeError, match="Erreur réseau simulée"):
+                await app.run_backtest(
+                    strategy_name="rsi_ha",
+                    start_dt=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    end_dt=datetime(2024, 12, 31, tzinfo=timezone.utc),
+                )
+
+        mock_strategy.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_backtest_trade_opened_appelle_state_machine(self, tmp_path: Path):
+        """Bug #3 : TRADE_OPENED doit déclencher state_machine.on_trade_opened()."""
+        app, _, _ = self._setup_app(tmp_path)
+        mock_strategy = MagicMock()
+        mock_strategy.stop = MagicMock()
+        mock_state_machine = MagicMock()
+        mock_state_machine.state = StrategyStateEnum.SIGNAL_READY
+        mock_state_machine.on_trade_opened = AsyncMock()
+        mock_state_machine.on_trade_closed = AsyncMock()
+
+        mock_strategy_cls = MagicMock(return_value=mock_strategy)
+        mock_simulator = MagicMock()
+        mock_simulator.closed_trades = []
+        mock_calculator = MagicMock()
+        from src.backtest.metrics import BacktestMetrics, BacktestResult
+        mock_calculator.compute.return_value = BacktestResult(
+            metrics=BacktestMetrics(
+                total_trades=0, win_rate=0.0, avg_rr=0.0, max_drawdown=0.0,
+                max_consecutive_wins=0, max_consecutive_losses=0, profit_factor=0.0,
+            ),
+            trades=[],
+        )
+
+        # replay.run() émet un TRADE_OPENED pendant son exécution
+        async def replay_with_trade_event(*args, **kwargs):
+            await app.event_bus.emit(
+                EventType.TRADE_OPENED,
+                TradeEvent(event_type=EventType.TRADE_OPENED, trade_id="bt-001", pair="BTC/USDT"),
+            )
+
+        mock_replay = MagicMock()
+        mock_replay.run = AsyncMock(side_effect=replay_with_trade_event)
+
+        with (
+            patch("src.core.app.DataDownloader"),
+            patch("src.core.app.ReplayEngine", return_value=mock_replay),
+            patch("src.core.app.TradeSimulator", return_value=mock_simulator),
+            patch("src.core.app.create_capital_manager"),
+            patch("src.core.app.StateMachine", return_value=mock_state_machine),
+            patch("src.core.app.StrategyRegistry") as mock_registry,
+            patch("src.core.app.MetricsCalculator", return_value=mock_calculator),
+            patch.object(app, "start", new_callable=AsyncMock),
+        ):
+            mock_registry.get.return_value = mock_strategy_cls
+            await app.run_backtest(
+                strategy_name="rsi_ha",
+                start_dt=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_dt=datetime(2024, 12, 31, tzinfo=timezone.utc),
+            )
+
+        mock_state_machine.on_trade_opened.assert_called_once_with("bt-001")
+
+    @pytest.mark.asyncio
+    async def test_run_backtest_on_trade_closed_guard_etat_non_in_trade(self, tmp_path: Path):
+        """Fix M2 : TRADE_CLOSED ignoré si state_machine n'est pas en état IN_TRADE."""
+        app, _, _ = self._setup_app(tmp_path)
+        mock_strategy = MagicMock()
+        mock_strategy.stop = MagicMock()
+        mock_state_machine = MagicMock()
+        # État != IN_TRADE → le guard doit bloquer l'appel
+        mock_state_machine.state = StrategyStateEnum.IDLE
+        mock_state_machine.on_trade_opened = AsyncMock()
+        mock_state_machine.on_trade_closed = AsyncMock()
+
+        mock_strategy_cls = MagicMock(return_value=mock_strategy)
+        mock_simulator = MagicMock()
+        mock_simulator.closed_trades = []
+        mock_calculator = MagicMock()
+        from src.backtest.metrics import BacktestMetrics, BacktestResult
+        mock_calculator.compute.return_value = BacktestResult(
+            metrics=BacktestMetrics(
+                total_trades=0, win_rate=0.0, avg_rr=0.0, max_drawdown=0.0,
+                max_consecutive_wins=0, max_consecutive_losses=0, profit_factor=0.0,
+            ),
+            trades=[],
+        )
+
+        async def replay_with_spurious_trade_closed(*args, **kwargs):
+            await app.event_bus.emit(
+                EventType.TRADE_CLOSED,
+                TradeEvent(event_type=EventType.TRADE_CLOSED, trade_id="bt-001", pair="BTC/USDT"),
+            )
+
+        mock_replay = MagicMock()
+        mock_replay.run = AsyncMock(side_effect=replay_with_spurious_trade_closed)
+
+        with (
+            patch("src.core.app.DataDownloader"),
+            patch("src.core.app.ReplayEngine", return_value=mock_replay),
+            patch("src.core.app.TradeSimulator", return_value=mock_simulator),
+            patch("src.core.app.create_capital_manager"),
+            patch("src.core.app.StateMachine", return_value=mock_state_machine),
+            patch("src.core.app.StrategyRegistry") as mock_registry,
+            patch("src.core.app.MetricsCalculator", return_value=mock_calculator),
+            patch.object(app, "start", new_callable=AsyncMock),
+        ):
+            mock_registry.get.return_value = mock_strategy_cls
+            await app.run_backtest(
+                strategy_name="rsi_ha",
+                start_dt=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_dt=datetime(2024, 12, 31, tzinfo=timezone.utc),
+            )
+
+        mock_state_machine.on_trade_closed.assert_not_called()

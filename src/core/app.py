@@ -21,8 +21,11 @@ from src.core.config import load_app_config, load_strategy_by_name
 from src.core.event_bus import EventBus
 from src.core.exceptions import InsufficientBalanceError
 from src.core.lock import LockFile
+from src.core.state_machine import StateMachine
 from src.core.state_manager import StateManager
 from src.core.logging import register_sensitive_values, setup_logging
+import src.strategies  # noqa: F401 — déclenche l'auto-enregistrement des stratégies
+from src.strategies.registry import StrategyRegistry
 from src.exchange.ccxt_connector import CcxtConnector
 from src.models.config import AppConfig, StrategyConfig
 from src.notifications.notification_service import NotificationService
@@ -558,13 +561,37 @@ class TradingApp:
             self.event_bus, self.strategy_config, capital_manager, initial_capital
         )
 
-        await replay_engine.run(
-            self.strategy_config.exchange,
-            self.strategy_config.pair,
-            self.strategy_config.timeframe,
-            start_dt,
-            end_dt,
+        # Instanciation de la stratégie et câblage sur le bus d'événements
+        state_machine = StateMachine(
+            self.event_bus, self.strategy_config.name, self.strategy_config.pair
         )
+        strategy_cls = StrategyRegistry.get(self.strategy_config.name)
+        strategy = strategy_cls(self.strategy_config, state_machine, self.event_bus)
+
+        # Transition state machine : SIGNAL_READY → IN_TRADE à l'ouverture d'un trade
+        async def _on_trade_opened(event: BaseEvent) -> None:
+            if isinstance(event, TradeEvent) and event.trade_id:
+                await state_machine.on_trade_opened(str(event.trade_id))
+
+        # Transition state machine : IN_TRADE → IDLE à la clôture d'un trade
+        async def _on_trade_closed(event: BaseEvent) -> None:
+            if state_machine.state == StrategyStateEnum.IN_TRADE:
+                await state_machine.on_trade_closed()
+
+        self.event_bus.on(EventType.TRADE_OPENED, _on_trade_opened)  # type: ignore[arg-type]
+        self.event_bus.on(EventType.TRADE_CLOSED, _on_trade_closed)  # type: ignore[arg-type]
+
+        try:
+            await replay_engine.run(
+                self.strategy_config.exchange,
+                self.strategy_config.pair,
+                self.strategy_config.timeframe,
+                start_dt,
+                end_dt,
+            )
+        finally:
+            # Nettoyage : désabonnement de la stratégie du bus après le replay (même en cas d'exception)
+            strategy.stop()
 
         calculator = MetricsCalculator()
         result = calculator.compute(simulator.closed_trades)

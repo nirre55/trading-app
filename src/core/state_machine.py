@@ -1,6 +1,7 @@
 """Machine à états générique pour la gestion des cycles de stratégie."""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from loguru import logger
 
@@ -97,7 +98,12 @@ class StateMachine:
             ),
         )
 
-    async def on_all_conditions_met(self, direction: str = "long") -> None:
+    async def on_all_conditions_met(
+        self,
+        direction: str = "long",
+        signal_price: Decimal | None = None,
+        sl_price: Decimal | None = None,
+    ) -> None:
         """Toutes les conditions satisfaites → WATCHING → SIGNAL_READY."""
         self._validate_transition(
             "on_all_conditions_met", (StrategyStateEnum.WATCHING,)
@@ -126,6 +132,8 @@ class StateMachine:
                 strategy_name=self._strategy_name,
                 pair=self._pair,
                 details=f"signal_{direction}",
+                signal_price=signal_price,
+                sl_price=sl_price,
             ),
         )
 
