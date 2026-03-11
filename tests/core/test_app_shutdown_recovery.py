@@ -265,8 +265,12 @@ class TestGracefulShutdown:
         app, _bus, state_file, stop_flag = self._setup_app(tmp_path)
         mock_conn = self._mock_connector()
 
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 
@@ -290,9 +294,13 @@ class TestGracefulShutdown:
             registered_signals.append(signum)
             return signal_module.SIG_DFL
 
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
         with patch.object(signal_module, "signal", side_effect=mock_signal_fn), \
              patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 
@@ -316,8 +324,12 @@ class TestGracefulShutdown:
         def mock_add_signal_handler(signum: int, callback: object) -> None:
             registered_signals.append(signum)
 
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             loop = asyncio.get_running_loop()
             original = loop.add_signal_handler
             loop.add_signal_handler = mock_add_signal_handler  # type: ignore[method-assign]

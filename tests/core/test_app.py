@@ -293,9 +293,13 @@ class TestRunLiveStateUpdates:
     async def test_state_json_written_at_startup(self, tmp_path: Path):
         app, _bus, state_file, stop_flag = self._setup_app(tmp_path)
         mock_conn = self._mock_connector()
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
 
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 
@@ -310,9 +314,13 @@ class TestRunLiveStateUpdates:
     async def test_strategy_signal_updates_state_json(self, tmp_path: Path):
         app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
         mock_conn = self._mock_connector()
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
 
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 
@@ -337,9 +345,13 @@ class TestRunLiveStateUpdates:
     async def test_trade_opened_updates_active_trades(self, tmp_path: Path):
         app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
         mock_conn = self._mock_connector()
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
 
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 
@@ -363,9 +375,13 @@ class TestRunLiveStateUpdates:
     async def test_trade_closed_removes_from_active_trades(self, tmp_path: Path):
         app, event_bus, state_file, stop_flag = self._setup_app(tmp_path)
         mock_conn = self._mock_connector()
+        mock_strategy_cls = MagicMock(return_value=MagicMock())
 
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
+             patch("src.core.app.StateMachine"), \
+             patch("src.core.app.StrategyRegistry") as mock_registry, \
              patch.object(app, "start", new_callable=AsyncMock):
+            mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
             await asyncio.sleep(0.05)
 

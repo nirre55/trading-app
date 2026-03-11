@@ -379,6 +379,8 @@ class TradingApp:
             async def _on_strategy_event(event: BaseEvent) -> None:
                 if not isinstance(event, StrategyEvent):
                     return
+                if not event.strategy_name:
+                    return
                 s = app_state.strategy_states.setdefault(
                     event.strategy_name, StrategyState(state=StrategyStateEnum.IDLE)
                 )
@@ -398,7 +400,7 @@ class TradingApp:
                 if not isinstance(event, TradeEvent):
                     return
                 if event.event_type == EventType.TRADE_OPENED:
-                    if event.trade_id not in app_state.active_trades:
+                    if event.trade_id and event.trade_id not in app_state.active_trades:
                         app_state.active_trades.append(event.trade_id)
                     for s in app_state.strategy_states.values():
                         if s.state == StrategyStateEnum.SIGNAL_READY:
@@ -463,6 +465,25 @@ class TradingApp:
                     trade_logger=trade_logger,
                 )
 
+            # Instanciation de la stratégie et câblage sur le bus d'événements (Bug #1 fix)
+            state_machine = StateMachine(
+                self.event_bus, self.strategy_config.name, self.strategy_config.pair
+            )
+            strategy_cls = StrategyRegistry.get(self.strategy_config.name)
+            strategy = strategy_cls(self.strategy_config, state_machine, self.event_bus)
+
+            # Transition state machine : SIGNAL_READY → IN_TRADE / IN_TRADE → IDLE
+            async def _on_trade_opened_sm(event: BaseEvent) -> None:
+                if isinstance(event, TradeEvent) and event.trade_id:
+                    await state_machine.on_trade_opened(str(event.trade_id))
+
+            async def _on_trade_closed_sm(event: BaseEvent) -> None:
+                if state_machine.state == StrategyStateEnum.IN_TRADE:
+                    await state_machine.on_trade_closed()
+
+            self.event_bus.on(EventType.TRADE_OPENED, _on_trade_opened_sm)  # type: ignore[arg-type]
+            self.event_bus.on(EventType.TRADE_CLOSED, _on_trade_closed_sm)  # type: ignore[arg-type]
+
             # Démarrage de la boucle principale
             logger.info("🚀 Boucle de trading démarrée pour '{}'", self.strategy_config.name)
 
@@ -493,6 +514,8 @@ class TradingApp:
             except asyncio.CancelledError:
                 pass
             finally:
+                # Désabonnement de la stratégie du bus CANDLE_CLOSED (resource leak fix)
+                strategy.stop()
                 candle_task.cancel()
                 backup_task.cancel()
                 try:
