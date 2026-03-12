@@ -239,6 +239,7 @@ class TestGracefulShutdown:
         mock_config.paths.logs = str(tmp_path / "logs")
         mock_config.paths.backup = str(tmp_path / "backups")
         mock_config.defaults.backup_interval_hours = 86400
+        mock_config.exchange.name = "binance"
         app.config = mock_config
 
         mock_strategy = MagicMock()

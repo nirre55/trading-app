@@ -38,6 +38,8 @@ class AppState(BaseModel):
     active_trades: list[str] = Field(default_factory=list)
     last_candle_timestamp: AwareDatetime | None = None
     dry_run: bool = False
+    exchange: str | None = None
+    pair: str | None = None
     uptime_start: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

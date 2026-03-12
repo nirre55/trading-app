@@ -16,3 +16,9 @@ defaults:
   log_level: "INFO"         # INFO ou DEBUG
   risk_percent: 1.0         # % du capital risqué par trade
   backup_interval_hours: 24 # Fréquence de backup en heures (défaut: 24h)
+
+# Notifications Telegram (optionnel)
+# telegram:
+#   enabled: true
+#   token: "YOUR_BOT_TOKEN"    # Token du bot Telegram — NE PAS COMMITER
+#   chat_id: "YOUR_CHAT_ID"    # ID du chat ou canal Telegram

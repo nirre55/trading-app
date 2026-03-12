@@ -102,6 +102,47 @@ class TestStatusCommand:
             assert result.exit_code == 0
             assert "[DRY-RUN]" not in result.output
 
+    def test_status_affiche_exchange_et_pair(self, tmp_path):
+        """FR35 : exchange et pair sont affichés quand présents dans state.json."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({
+                "uptime_start": datetime.now(timezone.utc).isoformat(),
+                "active_trades": [],
+                "strategy_states": {},
+                "exchange": "bitget",
+                "pair": "BTC/USDT",
+            })
+        )
+        with patch("src.cli.status.load_app_config") as mock_cfg:
+            mock_c = MagicMock()
+            mock_c.paths.state = str(state_file)
+            mock_cfg.return_value = mock_c
+            runner = CliRunner()
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "bitget" in result.output
+            assert "BTC/USDT" in result.output
+
+    def test_status_sans_exchange_ni_pair(self, tmp_path):
+        """FR35 : pas d'erreur si exchange/pair absents de state.json (backward compat)."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({
+                "uptime_start": datetime.now(timezone.utc).isoformat(),
+                "active_trades": [],
+                "strategy_states": {},
+            })
+        )
+        with patch("src.cli.status.load_app_config") as mock_cfg:
+            mock_c = MagicMock()
+            mock_c.paths.state = str(state_file)
+            mock_cfg.return_value = mock_c
+            runner = CliRunner()
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "Uptime" in result.output
+
     def test_status_fallback_when_config_error(self, tmp_path):
         with patch("src.cli.status.load_app_config", side_effect=ConfigError("config error")):
             runner = CliRunner()

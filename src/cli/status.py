@@ -49,6 +49,12 @@ def status(ctx):
     mode_label = " [DRY-RUN]" if dry_run else ""
     click.echo(f"Statut du systeme de trading{mode_label} :")
     click.echo(f"  Uptime           : {hours:02d}:{minutes:02d}:{seconds:02d}")
+    exchange = state_data.get("exchange")
+    pair = state_data.get("pair")
+    if exchange:
+        click.echo(f"  Exchange         : {exchange}")
+    if pair:
+        click.echo(f"  Paire            : {pair}")
     active_trades = state_data.get("active_trades", [])
     click.echo(f"  Trades actifs    : {len(active_trades)} {active_trades}")
     strategy_states = state_data.get("strategy_states", {})

@@ -83,7 +83,7 @@ class TradingApp:
         ]
         if self.config.exchange.password is not None:
             sensitive.append(self.config.exchange.password.get_secret_value())
-        if self.config.telegram is not None and self.config.telegram.enabled:
+        if self.config.telegram is not None:
             sensitive.append(self.config.telegram.token.get_secret_value())
         register_sensitive_values(*sensitive)
 
@@ -373,6 +373,8 @@ class TradingApp:
             )
             app_state = recovered_state if recovered_state is not None else AppState()
             app_state.dry_run = dry_run
+            app_state.exchange = self.config.exchange.name
+            app_state.pair = self.strategy_config.pair
             state_manager.save(app_state)
 
             # Abonnements bus — mise à jour de app_state sur événements strategy/trade (Task 5.2)

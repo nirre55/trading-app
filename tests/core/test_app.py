@@ -269,6 +269,7 @@ class TestRunLiveStateUpdates:
         mock_config.paths.backup = str(tmp_path / "backups")
         mock_config.defaults.backup_interval_hours = 86400  # 86 400 h ≫ durée des tests → backup_task ne s'exécute jamais
         mock_config.exchange = MagicMock()
+        mock_config.exchange.name = "binance"
         app.config = mock_config
 
         mock_strategy = MagicMock()
@@ -487,6 +488,7 @@ def _make_app_config_mock(tmp_path: Path) -> MagicMock:
     mock_config.paths.logs = str(tmp_path / "logs")
     mock_config.paths.state = str(tmp_path / "state.json")
     mock_config.defaults.backup_interval_hours = 86400
+    mock_config.exchange.name = "binance"
     return mock_config
 
 
