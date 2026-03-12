@@ -33,7 +33,7 @@ def run(ctx, strategy, from_date, to_date, output, capital):
         start_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         end_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError as e:
-        click.echo(f"❌ Format de date invalide (attendu YYYY-MM-DD) : {e}", err=True)
+        click.echo(f"[ERREUR] Format de date invalide (attendu YYYY-MM-DD) : {e}", err=True)
         raise SystemExit(2) from e
     config_path = Path(ctx.obj["CONFIG_PATH"]) if ctx.obj.get("CONFIG_PATH") else None
     output_path = Path(output) if output else None
@@ -49,14 +49,14 @@ def run(ctx, strategy, from_date, to_date, output, capital):
             )
         )
     except ConfigError as e:
-        click.echo(f"❌ Erreur de configuration : {e}", err=True)
+        click.echo(f"[ERREUR] Erreur de configuration : {e}", err=True)
         raise SystemExit(1) from e
     except TradingAppError as e:
-        click.echo(f"❌ Erreur système : {e}", err=True)
+        click.echo(f"[ERREUR] Erreur système : {e}", err=True)
         raise SystemExit(1) from e
     # Affichage des métriques
     m = result.metrics
-    click.echo("\n📊 Résultats du backtest :")
+    click.echo("\n=== Résultats du backtest ===")
     click.echo(f"  Trades total     : {m.total_trades}")
     click.echo(f"  Win rate         : {m.win_rate:.1%}")
     click.echo(f"  Ratio R:R moyen  : {m.avg_rr:.2f}")
@@ -68,4 +68,4 @@ def run(ctx, strategy, from_date, to_date, output, capital):
         click.echo(f"  Risk % min       : {m.risk_percent_min:.4f}%")
         click.echo(f"  Risk % max       : {m.risk_percent_max:.4f}%")
     if output_path:
-        click.echo(f"\n💾 Résultats exportés → {output_path}")
+        click.echo(f"\nRésultats exportés -> {output_path}")

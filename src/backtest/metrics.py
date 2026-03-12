@@ -27,6 +27,7 @@ class BacktestMetrics(BaseModel):
     profit_factor: float  # sum(gains) / sum(|pertes|), inf si 0 perte
     risk_percent_min: float | None = None  # risk_percent min utilisé — FR47 (martingale)
     risk_percent_max: float | None = None  # risk_percent max utilisé — FR47 (martingale)
+    capital_after: float | None = None  # capital final après tous les trades — FR46 (validation reset)
 
 
 class BacktestResult(BaseModel):
@@ -126,6 +127,9 @@ class MetricsCalculator:
         risk_percent_min = min(risk_percents) if risk_percents else None
         risk_percent_max = max(risk_percents) if risk_percents else None
 
+        # Capital final — permet de valider FR46 (capital non nul après reset martingale)
+        capital_after = float(trades[-1].capital_after)
+
         logger.info(
             "Métriques calculées — {} trades, win_rate={:.1%}, profit_factor={:.2f}",
             total_trades,
@@ -144,6 +148,7 @@ class MetricsCalculator:
                 profit_factor=profit_factor,
                 risk_percent_min=risk_percent_min,
                 risk_percent_max=risk_percent_max,
+                capital_after=capital_after,
             ),
             trades=trades,
         )

@@ -320,6 +320,21 @@ def test_martingale_no_max_steps_accumulates_unlimited() -> None:
     assert qty == Decimal("3.200")
 
 
+def test_fr46_reset_after_max_steps_reached() -> None:
+    """FR46 : martingale, gain après max_steps=5 atteint → risk_percent revient à la base (params Story 11.2)."""
+    manager = make_manager(mode="martingale", risk_percent=0.5, factor=2.0, max_steps=5)
+
+    for _ in range(5):
+        manager.record_trade_result(won=False)
+
+    # Plafond atteint : 0.5% × 2^5 = 16.0%
+    assert manager.get_current_risk_percent() == pytest.approx(16.0)
+
+    # Gain → reset FR46 : risk_percent revient à la base
+    manager.record_trade_result(won=True)
+    assert manager.get_current_risk_percent() == pytest.approx(0.5)
+
+
 def test_sl_distance_zero_raises() -> None:
     """Distance SL nulle → ValueError."""
     manager = make_manager()
