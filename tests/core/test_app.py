@@ -299,6 +299,8 @@ class TestRunLiveStateUpdates:
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
@@ -320,6 +322,8 @@ class TestRunLiveStateUpdates:
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
@@ -351,6 +355,8 @@ class TestRunLiveStateUpdates:
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
@@ -381,6 +387,8 @@ class TestRunLiveStateUpdates:
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
@@ -623,6 +631,7 @@ class TestRunBacktest:
 
         # replay.run() émet un TRADE_OPENED pendant son exécution
         async def replay_with_trade_event(*args, **kwargs):
+            assert app.event_bus is not None
             await app.event_bus.emit(
                 EventType.TRADE_OPENED,
                 TradeEvent(event_type=EventType.TRADE_OPENED, trade_id="bt-001", pair="BTC/USDT"),
@@ -676,6 +685,7 @@ class TestRunBacktest:
         )
 
         async def replay_with_spurious_trade_closed(*args, **kwargs):
+            assert app.event_bus is not None
             await app.event_bus.emit(
                 EventType.TRADE_CLOSED,
                 TradeEvent(event_type=EventType.TRADE_CLOSED, trade_id="bt-001", pair="BTC/USDT"),

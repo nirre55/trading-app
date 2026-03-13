@@ -270,6 +270,8 @@ class TestGracefulShutdown:
         with patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))
@@ -300,6 +302,8 @@ class TestGracefulShutdown:
              patch("src.core.app.CcxtConnector", return_value=mock_conn), \
              patch("src.core.app.StateMachine"), \
              patch("src.core.app.StrategyRegistry") as mock_registry, \
+             patch("src.core.app.create_capital_manager"), \
+             patch("src.core.app.TradeExecutor", return_value=MagicMock(stop=AsyncMock())), \
              patch.object(app, "start", new_callable=AsyncMock):
             mock_registry.get.return_value = mock_strategy_cls
             live_task = asyncio.create_task(app.run_live("ma-strat"))

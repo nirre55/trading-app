@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal, cast
 
 import pytest
 
@@ -11,6 +12,8 @@ from src.capital.fixed_percent import FixedPercentCapitalManager
 from src.capital.martingale import MartingaleCapitalManager
 from src.models.config import CapitalConfig
 from src.models.exchange import MarketRules
+
+_CapitalMode = Literal["fixed_percent", "martingale", "martingale_inverse"]
 
 
 def make_capital_config(
@@ -21,7 +24,7 @@ def make_capital_config(
 ) -> CapitalConfig:
     """Fabrique une CapitalConfig pour les tests factory."""
     return CapitalConfig(
-        mode=mode,
+        mode=cast(_CapitalMode, mode),
         risk_percent=risk_percent,
         risk_reward_ratio=2.0,
         factor=factor,
@@ -72,7 +75,7 @@ def test_factory_martingale_inverse_returns_martingale_manager() -> None:
 def test_factory_unknown_mode_raises_value_error() -> None:
     """Mode inconnu → ValueError levée avec message explicite."""
     config = make_capital_config("fixed_percent")
-    config.mode = "mode_inexistant"  # Bypasse la validation Pydantic
+    config.mode = "mode_inexistant"  # type: ignore[assignment]  # Bypasse la validation Pydantic
     market_rules = make_market_rules()
 
     with pytest.raises(ValueError, match="Mode capital non supporté"):

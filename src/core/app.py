@@ -33,6 +33,7 @@ from src.models.events import AppEvent, BaseEvent, ErrorEvent, EventType, Exchan
 from src.models.exchange import MarketRules, OrderSide, OrderType
 from src.models.state import AppState, StrategyState, StrategyStateEnum
 from src.trading.mock_executor import MockExecutor
+from src.trading.trade_executor import TradeExecutor
 from src.trading.trade_logger import TradeLogger
 
 # Market rules par défaut pour le backtest (pas de fetching exchange en mode simulation)
@@ -354,6 +355,7 @@ class TradingApp:
         connector: CcxtConnector | None = None
         app_state: AppState | None = None  # Accessible dans finally pour _verify_tpsl_on_shutdown
         mock_executor: MockExecutor | None = None
+        trade_executor: TradeExecutor | None = None
         _clean_exit = False
         try:
             connector = CcxtConnector(
@@ -451,7 +453,7 @@ class TradingApp:
                     AppEvent(event_type=EventType.APP_RECOVERY),
                 )
 
-            # Mode dry-run : instanciation MockExecutor (AC1, Story 9.1)
+            # Instanciation de l'exécuteur selon le mode (dry-run vs live)
             if dry_run:
                 data_dir_trades = Path(self.config.paths.trades)
                 trade_logger = TradeLogger(data_dir_trades)
@@ -460,6 +462,21 @@ class TradingApp:
                     _DEFAULT_BACKTEST_MARKET_RULES,
                 )
                 mock_executor = MockExecutor(
+                    connector=connector,
+                    event_bus=self.event_bus,
+                    config=self.strategy_config,
+                    capital_manager=capital_manager,
+                    trade_logger=trade_logger,
+                )
+            else:
+                data_dir_trades = Path(self.config.paths.trades)
+                trade_logger = TradeLogger(data_dir_trades)
+                live_market_rules = connector.market_rules or _DEFAULT_BACKTEST_MARKET_RULES
+                capital_manager = create_capital_manager(
+                    self.strategy_config.capital,
+                    live_market_rules,
+                )
+                trade_executor = TradeExecutor(
                     connector=connector,
                     event_bus=self.event_bus,
                     config=self.strategy_config,
@@ -510,6 +527,126 @@ class TradingApp:
                     self.config.defaults.backup_interval_hours,
                 )
             )
+
+            # Moniteur de position live : détecte SL/TP hit toutes les 5s (Story 11.4)
+            # Cache local SL/TP par trade_id — peuplé via trade_executor et recovery
+            _sl_tp_cache: dict[str, tuple[Decimal, Decimal, str]] = {}  # {trade_id: (sl, tp, pair)}
+
+            # Peupler le cache depuis les open_trades du trade_executor
+            if trade_executor is not None:
+                for tid, rec in trade_executor._open_trades.items():
+                    _sl_tp_cache[tid] = (rec.stop_loss, rec.take_profit, rec.pair)
+
+            # Peupler le cache depuis les open trigger orders (après crash recovery)
+            if app_state.active_trades and trade_executor is not None:
+                try:
+                    recovery_orders = await connector.fetch_open_orders()
+                    recovery_triggers = [
+                        o for o in recovery_orders if o.get("triggerPrice") is not None
+                    ]
+                    if recovery_triggers and app_state.active_trades:
+                        tid = app_state.active_trades[0]
+                        if tid not in _sl_tp_cache:
+                            sl_cands = [
+                                Decimal(str(o["triggerPrice"]))
+                                for o in recovery_triggers
+                                if o.get("info", {}).get("planType") == "pos_loss"
+                            ]
+                            tp_cands = [
+                                Decimal(str(o["triggerPrice"]))
+                                for o in recovery_triggers
+                                if o.get("info", {}).get("planType") == "pos_profit"
+                            ]
+                            if sl_cands and tp_cands:
+                                _sl_tp_cache[tid] = (sl_cands[0], tp_cands[0], self.strategy_config.pair)
+                                logger.info(
+                                    "Recovery cache SL/TP — trade_id={} sl={} tp={}",
+                                    tid, sl_cands[0], tp_cands[0],
+                                )
+                except Exception as exc:
+                    logger.warning("Impossible de peupler le cache SL/TP depuis les ordres : {}", exc)
+
+            async def _position_monitor() -> None:
+                """Détecte la fermeture de position (SL/TP) et émet l'événement adéquat."""
+                while True:
+                    await asyncio.sleep(5)
+                    if not app_state.active_trades or trade_executor is None:
+                        continue
+                    try:
+                        # Mettre à jour le cache depuis trade_executor si nouveau trade
+                        for tid, rec in trade_executor._open_trades.items():
+                            if tid not in _sl_tp_cache:
+                                _sl_tp_cache[tid] = (rec.stop_loss, rec.take_profit, rec.pair)
+
+                        positions = await connector.fetch_positions()
+                        open_pos = next(
+                            (p for p in positions if float(p.get("contracts", 0)) > 0),
+                            None,
+                        )
+                        if open_pos is not None:
+                            continue  # Position encore ouverte
+
+                        # Position fermée — déterminer SL ou TP
+                        trade_id = app_state.active_trades[0]
+                        cached = _sl_tp_cache.get(trade_id)
+                        if cached is None:
+                            logger.warning("Cache SL/TP absent pour trade_id={}", trade_id)
+                            continue
+                        sl_price, tp_price, pair = cached
+
+                        # Vérifier les ordres trigger encore ouverts
+                        open_orders = await connector.fetch_open_orders()
+                        trigger_orders = [
+                            o for o in open_orders
+                            if o.get("triggerPrice") is not None
+                        ]
+                        # Annuler les ordres de protection restants
+                        for o in trigger_orders:
+                            try:
+                                await connector.cancel_order(o["id"], is_plan_order=True)
+                            except Exception:
+                                pass
+
+                        # Identifier quel ordre a été déclenché via planType
+                        sl_still_open = any(
+                            o.get("info", {}).get("planType") == "pos_loss"
+                            for o in trigger_orders
+                        )
+                        tp_still_open = any(
+                            o.get("info", {}).get("planType") == "pos_profit"
+                            for o in trigger_orders
+                        )
+                        if tp_still_open and not sl_still_open:
+                            close_event_type = EventType.TRADE_SL_HIT
+                            exit_price = sl_price
+                        else:
+                            close_event_type = EventType.TRADE_TP_HIT
+                            exit_price = tp_price
+
+                        logger.info(
+                            "[LIVE] Position fermée détectée — trade_id={} event={} exit_price={}",
+                            trade_id,
+                            close_event_type.value,
+                            exit_price,
+                        )
+                        _sl_tp_cache.pop(trade_id, None)
+                        assert self.event_bus is not None
+                        await self.event_bus.emit(
+                            close_event_type,
+                            TradeEvent(
+                                event_type=close_event_type,
+                                trade_id=trade_id,
+                                pair=pair,
+                                exit_price=exit_price,
+                            ),
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning("Position monitor erreur : {}", exc)
+
+            position_monitor_task = asyncio.create_task(_position_monitor())
+
             try:
                 while not stop_flag.exists() and not shutdown_event.is_set():
                     await asyncio.sleep(2)
@@ -520,12 +657,17 @@ class TradingApp:
                 strategy.stop()
                 candle_task.cancel()
                 backup_task.cancel()
+                position_monitor_task.cancel()
                 try:
                     await candle_task
                 except asyncio.CancelledError:
                     pass
                 try:
                     await backup_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await position_monitor_task
                 except asyncio.CancelledError:
                     pass
             _clean_exit = True
@@ -535,6 +677,9 @@ class TradingApp:
                 await mock_executor.stop()
                 # AC6 (Story 9.2) : résumé final de la session dry-run
                 self._print_dry_run_summary(mock_executor.get_summary())
+            # Arrêt du TradeExecutor si actif (mode live)
+            if trade_executor is not None:
+                await trade_executor.stop()
             # Vérification TP/SL avant fermeture — uniquement en mode live (FR41)
             # En dry-run, aucun ordre réel n'a été placé : l'appel serait trompeur
             if connector is not None and app_state is not None and mock_executor is None:

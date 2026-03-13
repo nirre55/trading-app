@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from loguru import logger
 
@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from src.strategies.base import BaseStrategy
+
+_S = TypeVar("_S", bound="BaseStrategy")
 
 __all__ = ["StrategyRegistry"]
 
@@ -50,7 +52,7 @@ class StrategyRegistry:
         return list(cls._registry.keys())
 
     @classmethod
-    def strategy(cls, name: str) -> Callable[[type[BaseStrategy]], type[BaseStrategy]]:
+    def strategy(cls, name: str) -> Callable[[type[_S]], type[_S]]:
         """Décorateur d'enregistrement automatique d'une stratégie dans le registre.
 
         Usage:
@@ -59,8 +61,8 @@ class StrategyRegistry:
                 ...
         """
 
-        def decorator(strategy_class: type[BaseStrategy]) -> type[BaseStrategy]:
-            cls.register(name, strategy_class)
+        def decorator(strategy_class: type[_S]) -> type[_S]:
+            cls.register(name, strategy_class)  # type: ignore[arg-type]
             return strategy_class
 
         return decorator

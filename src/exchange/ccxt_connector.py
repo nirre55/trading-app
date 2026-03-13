@@ -20,7 +20,7 @@ from src.exchange.order_validator import OrderValidator
 from src.exchange.rate_limiter import RateLimitConfig, RateLimiter
 from src.models.config import ExchangeConfig
 from src.models.events import CandleEvent, ErrorEvent, EventType, ExchangeEvent
-from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, OrderType
+from src.models.exchange import Balance, MarketRules, OrderInfo, OrderSide, OrderStatus, OrderType
 
 __all__ = ["CcxtConnector"]
 
@@ -67,6 +67,7 @@ class CcxtConnector(BaseExchangeConnector):
                 "enableRateLimit": True,
                 "options": {
                     "defaultType": "future",
+                    "createMarketBuyOrderRequiresPrice": False,
                 },
             }
             if self._exchange_config.password is not None:
@@ -428,8 +429,12 @@ class CcxtConnector(BaseExchangeConnector):
                     max_leverage = api_leverage
                     logger.info("max_leverage={} pour {} (source: fetch_leverage_tiers)", max_leverage, pair)
                 else:
-                    max_leverage = 1
-                    logger.info("max_leverage=1 pour {} (source: fallback)", pair)
+                    max_leverage = 125
+                    logger.warning(
+                        "max_leverage non disponible via API pour {} sur {} — fallback conservateur: 125",
+                        pair,
+                        self._exchange_name,
+                    )
 
             rules = MarketRules(
                 step_size=step_size,
@@ -449,35 +454,128 @@ class CcxtConnector(BaseExchangeConnector):
         quantity: Decimal,
         price: Decimal | None = None,
     ) -> OrderInfo:
-        """Stub — sera implemente lors de l'integration CCXT complete."""
-        raise NotImplementedError("place_order sera implemente lors de l'integration CCXT")
+        """Place un ordre sur l'exchange via CCXT."""
+        side_str = "buy" if side == OrderSide.BUY else "sell"
+        qty_float = float(quantity)
 
-    async def cancel_order(self, order_id: str) -> None:
-        """Stub — sera implemente lors de l'integration CCXT complete."""
-        raise NotImplementedError("cancel_order sera implemente lors de l'integration CCXT")
+        async def _do_place() -> OrderInfo:
+            params: dict[str, Any] = {}
+            if self._exchange_name == "bitget":
+                params["productType"] = "USDT-FUTURES"
+                # Compte en mode hedge (bilatéral) — requis pour USDT-M Bitget
+                params["hedged"] = True
+
+            if order_type == OrderType.MARKET:
+                raw = await self._exchange.create_order(
+                    self._pair, "market", side_str, qty_float, None, params
+                )
+                filled_price = raw.get("average") or raw.get("price")
+                return OrderInfo(
+                    id=str(raw["id"]),
+                    pair=self._pair,
+                    side=side,
+                    order_type=order_type,
+                    price=Decimal(str(filled_price)) if filled_price else None,
+                    quantity=quantity,
+                    status=OrderStatus.FILLED if raw.get("status") == "closed" else OrderStatus.PENDING,
+                )
+            elif order_type in (OrderType.STOP_LOSS, OrderType.TAKE_PROFIT):
+                if price is None:
+                    raise ValueError(f"price requis pour order_type={order_type}")
+                # SL/TP via params CCXT standards — planType pos_loss/pos_profit
+                if order_type == OrderType.STOP_LOSS:
+                    params["stopLossPrice"] = float(price)
+                else:
+                    params["takeProfitPrice"] = float(price)
+                raw = await self._exchange.create_order(
+                    self._pair, "market", side_str, qty_float, None, params
+                )
+                return OrderInfo(
+                    id=str(raw["id"]),
+                    pair=self._pair,
+                    side=side,
+                    order_type=order_type,
+                    price=price,
+                    quantity=quantity,
+                    status=OrderStatus.PENDING,
+                )
+            else:
+                raise ValueError(f"order_type non supporté: {order_type}")
+
+        return await self._rate_limiter.execute(_do_place)
+
+    async def cancel_order(self, order_id: str, is_plan_order: bool = False) -> None:
+        """Annule un ordre sur l'exchange via CCXT."""
+        async def _do_cancel() -> None:
+            params: dict[str, Any] = {}
+            if self._exchange_name == "bitget":
+                params["productType"] = "USDT-FUTURES"
+                if is_plan_order:
+                    # Les ordres SL/TP Bitget sont des plan orders (trigger)
+                    params["trigger"] = True
+            await self._exchange.cancel_order(order_id, self._pair, params)
+
+        await self._rate_limiter.execute(_do_cancel)
 
     async def set_leverage(self, pair: str, leverage: int) -> None:
-        """Stub — sera implemente lors de l'integration CCXT (Epic 6)."""
-        raise NotImplementedError("Sera implemente lors de l'integration CCXT (Epic 6)")
+        """Applique le levier sur l'exchange via CCXT."""
+        async def _do_set() -> None:
+            params: dict[str, Any] = {}
+            if self._exchange_name == "bitget":
+                params["productType"] = "USDT-FUTURES"
+                params["marginMode"] = "isolated"
+                params["marginCoin"] = "USDT"
+            await self._exchange.set_leverage(leverage, pair, params)
+            logger.info("Levier {} appliqué pour {} sur {}", leverage, pair, self._exchange_name)
+
+        await self._rate_limiter.execute(_do_set)
 
     async def fetch_balance(self) -> Balance:
-        """Recupere la balance du compte depuis l'exchange."""
+        """Recupere la balance du compte depuis l'exchange (USDT prioritaire, USDC en fallback)."""
 
         async def _do_fetch() -> Balance:
             result = await self._exchange.fetch_balance()
-            usdt = result["USDT"]
-            balance = Balance(
-                total=Decimal(str(usdt["total"])),
-                free=Decimal(str(usdt["free"])),
-                used=Decimal(str(usdt["used"])),
-                currency="USDT",
+            # Première passe : chercher une devise avec balance > 0 (USDT prioritaire)
+            for currency in ("USDT", "USDC"):
+                data = result.get(currency)
+                if data is not None and data.get("total") is not None:
+                    if Decimal(str(data["total"])) > 0:
+                        balance = Balance(
+                            total=Decimal(str(data["total"])),
+                            free=Decimal(str(data["free"])),
+                            used=Decimal(str(data["used"])),
+                            currency=currency,
+                        )
+                        logger.info(
+                            "Balance recuperee: {} {} disponible sur {} {} total",
+                            balance.free,
+                            currency,
+                            balance.total,
+                            currency,
+                        )
+                        return balance
+            # Deuxième passe : accepter une balance à 0 si c'est tout ce qu'on a
+            for currency in ("USDT", "USDC"):
+                data = result.get(currency)
+                if data is not None and data.get("total") is not None:
+                    balance = Balance(
+                        total=Decimal(str(data["total"])),
+                        free=Decimal(str(data["free"])),
+                        used=Decimal(str(data["used"])),
+                        currency=currency,
+                    )
+                    logger.info(
+                        "Balance recuperee: {} {} disponible sur {} {} total",
+                        balance.free,
+                        currency,
+                        balance.total,
+                        currency,
+                    )
+                    return balance
+            raise ExchangeError(
+                f"Aucune balance USDT ou USDC trouvee sur {self._exchange_name}",
+                context={"exchange": self._exchange_name, "available_keys": list(result.keys())},
             )
-            logger.info(
-                "Balance recuperee: {} USDT disponible sur {} USDT total",
-                balance.free,
-                balance.total,
-            )
-            return balance
 
         try:
             return await self._rate_limiter.execute(_do_fetch)
@@ -506,20 +604,22 @@ class CcxtConnector(BaseExchangeConnector):
 
         if balance.free < min_required:
             logger.error(
-                "Balance insuffisante: {} USDT disponible, {} USDT requis",
+                "Balance insuffisante: {} {} disponible, {} {} requis",
                 balance.free,
+                balance.currency,
                 min_required,
+                balance.currency,
             )
             await self._event_bus.emit(
                 EventType.ERROR_CRITICAL,
                 ErrorEvent(
                     event_type=EventType.ERROR_CRITICAL,
                     error_type="InsufficientBalance",
-                    message=f"Balance insuffisante: {balance.free} USDT disponible, {min_required} USDT requis",
+                    message=f"Balance insuffisante: {balance.free} {balance.currency} disponible, {min_required} {balance.currency} requis",
                 ),
             )
             raise InsufficientBalanceError(
-                f"Balance insuffisante: {balance.free} USDT disponible, {min_required} USDT requis",
+                f"Balance insuffisante: {balance.free} {balance.currency} disponible, {min_required} {balance.currency} requis",
                 context={
                     "free": str(balance.free),
                     "required": str(min_required),
@@ -528,9 +628,11 @@ class CcxtConnector(BaseExchangeConnector):
             )
 
         logger.info(
-            "Balance suffisante: {} USDT >= {} USDT",
+            "Balance suffisante: {} {} >= {} {}",
             balance.free,
+            balance.currency,
             min_required,
+            balance.currency,
         )
         return balance
 
@@ -538,7 +640,11 @@ class CcxtConnector(BaseExchangeConnector):
         """Recupere les positions ouvertes sur l'exchange."""
 
         async def _do_fetch() -> list[dict[str, Any]]:
-            positions = await self._exchange.fetch_positions([self._pair])
+            # Bitget exige productType pour fetch_positions (code 40019)
+            params: dict[str, Any] = {}
+            if self._exchange_name == "bitget":
+                params["productType"] = "USDT-FUTURES"
+            positions = await self._exchange.fetch_positions([self._pair], params=params)
             open_positions = [p for p in positions if p.get("contracts", 0) > 0]
             logger.info(
                 "{} position(s) ouverte(s) trouvee(s) sur {} pour {}",
@@ -564,10 +670,28 @@ class CcxtConnector(BaseExchangeConnector):
             ) from exc
 
     async def fetch_open_orders(self) -> list[dict[str, Any]]:
-        """Récupère les ordres ouverts pour la paire (SL, TP, etc.)."""
+        """Récupère les ordres ouverts pour la paire (SL, TP, etc.).
+
+        Pour Bitget, fusionne les ordres réguliers ET les plan orders (SL/TP triggers),
+        car ils sont sur des endpoints distincts.
+        """
 
         async def _do_fetch() -> list[dict[str, Any]]:
-            return await self._exchange.fetch_open_orders(self._pair)
+            params: dict[str, Any] = {}
+            if self._exchange_name == "bitget":
+                params["productType"] = "USDT-FUTURES"
+            regular_orders = await self._exchange.fetch_open_orders(self._pair, params=params)
+
+            if self._exchange_name == "bitget":
+                # Bitget SL/TP sont des plan orders — endpoint séparé
+                plan_params = {**params, "trigger": True}
+                try:
+                    plan_orders = await self._exchange.fetch_open_orders(self._pair, params=plan_params)
+                    return regular_orders + plan_orders
+                except Exception as exc:
+                    logger.warning("fetch_open_orders plan orders échoué (ignoré) : {}", exc)
+
+            return regular_orders
 
         try:
             return await self._rate_limiter.execute(_do_fetch)
@@ -605,11 +729,8 @@ class CcxtConnector(BaseExchangeConnector):
             return
 
         try:
-            async def _do_fetch_orders() -> list:
-                return await self._exchange.fetch_open_orders(self._pair)
-
-            open_orders = await self._rate_limiter.execute(_do_fetch_orders)
-        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.BaseError) as exc:
+            open_orders = await self.fetch_open_orders()
+        except (ExchangeConnectionError, ExchangeError) as exc:
             logger.error("Impossible de recuperer les ordres ouverts : {}", exc)
             await self._event_bus.emit(
                 EventType.ERROR_CRITICAL,
@@ -628,6 +749,8 @@ class CcxtConnector(BaseExchangeConnector):
             o for o in open_orders
             if o.get("type", "").lower() in ("stop_market", "stop", "stop_loss")
             or o.get("stopPrice") is not None
+            or o.get("triggerPrice") is not None
+            or o.get("info", {}).get("planType") in ("pos_loss", "loss_plan")
         ]
 
         unprotected: list[dict[str, Any]] = []

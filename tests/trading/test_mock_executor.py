@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.core.event_bus import EventBus
-from src.models.events import CandleEvent, EventType, StrategyEvent, TradeEvent
+from src.models.events import BaseEvent, CandleEvent, EventType, StrategyEvent, TradeEvent
 from src.models.trade import TradeDirection
 from src.trading.mock_executor import MockExecutor
 
@@ -90,8 +90,8 @@ class TestMockExecutorSignalHandling:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -151,8 +151,8 @@ class TestMockExecutorSignalHandling:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -182,8 +182,8 @@ class TestMockExecutorSignalHandling:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -212,8 +212,8 @@ class TestMockExecutorSignalHandling:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -242,8 +242,8 @@ class TestMockExecutorSignalHandling:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -294,8 +294,8 @@ class TestMockExecutorTpSlDetection:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -333,8 +333,8 @@ class TestMockExecutorTpSlDetection:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -372,8 +372,8 @@ class TestMockExecutorTpSlDetection:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -407,8 +407,8 @@ class TestMockExecutorTpSlDetection:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -452,8 +452,8 @@ class TestMockExecutorTpSlDetection:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -1038,8 +1038,8 @@ class TestMockExecutorAC4Notification:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 
@@ -1070,8 +1070,8 @@ class TestMockExecutorAC4Notification:
         event_bus = EventBus()
         closed_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            closed_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            closed_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_CLOSED, capture)
 
@@ -1118,8 +1118,8 @@ class TestMockExecutorStop:
         event_bus = EventBus()
         opened_events: list[TradeEvent] = []
 
-        async def capture(event: TradeEvent) -> None:
-            opened_events.append(event)
+        async def capture(event: BaseEvent) -> None:
+            opened_events.append(event)  # type: ignore[arg-type]
 
         event_bus.on(EventType.TRADE_OPENED, capture)
 

@@ -223,14 +223,14 @@ class TestTelegramConfig:
     """Tests pour TelegramConfig (Story 8.1)."""
 
     def test_instanciation_valide_enabled(self):
-        config = TelegramConfig(enabled=True, token="bot123:AAAA", chat_id="123456")
+        config = TelegramConfig(enabled=True, token=SecretStr("bot123:AAAA"), chat_id="123456")
         assert config.enabled is True
         assert config.chat_id == "123456"
         assert isinstance(config.token, SecretStr)
         assert config.token.get_secret_value() == "bot123:AAAA"
 
     def test_token_masque_dans_repr(self):
-        config = TelegramConfig(enabled=True, token="super_secret_token", chat_id="123")
+        config = TelegramConfig(enabled=True, token=SecretStr("super_secret_token"), chat_id="123")
         assert "super_secret_token" not in repr(config)
 
     def test_valeurs_par_defaut(self):
@@ -262,14 +262,14 @@ class TestTelegramConfig:
     def test_telegram_config_enabled_token_vide_raise_validation_error(self):
         """L2 : enabled=True avec token vide → ValidationError explicite."""
         with pytest.raises(ValidationError, match="token.*chat_id.*requis"):
-            TelegramConfig(enabled=True, token="", chat_id="999")
+            TelegramConfig(enabled=True, token=SecretStr(""), chat_id="999")
 
     def test_telegram_config_enabled_chat_id_vide_raise_validation_error(self):
         """L2 : enabled=True avec chat_id vide → ValidationError explicite."""
         with pytest.raises(ValidationError, match="token.*chat_id.*requis"):
-            TelegramConfig(enabled=True, token="bot123:AAAA", chat_id="")
+            TelegramConfig(enabled=True, token=SecretStr("bot123:AAAA"), chat_id="")
 
     def test_telegram_config_disabled_token_vide_accepte(self):
         """L2 : enabled=False avec token/chat_id vides → pas d'erreur (désactivé)."""
-        config = TelegramConfig(enabled=False, token="", chat_id="")
+        config = TelegramConfig(enabled=False, token=SecretStr(""), chat_id="")
         assert config.enabled is False

@@ -223,14 +223,14 @@ def test_rsi_ha_no_signal_partial_rsi_ac5() -> None:
     strategy, sm, _ = make_strategy()
 
     # Historique suffisant pour que max_period+1=8 bougies soient disponibles
-    strategy._candle_history = make_downtrend_candles(8)
+    strategy._candle_history = make_downtrend_candles(8)  # type: ignore[attr-defined]
 
     # Patcher RSI(7) (index 2) pour retourner 40 > seuil oversold 30
     mock_rsi7 = MagicMock()
     mock_rsi7.compute.return_value = [None] * 7 + [Decimal("40")]
-    strategy._rsi_indicators[2] = mock_rsi7
+    strategy._rsi_indicators[2] = mock_rsi7  # type: ignore[attr-defined]
 
-    result = strategy._check_rsi_zone()
+    result = strategy._check_rsi_zone()  # type: ignore[attr-defined]
 
     # RSI(7)=40 > 30 → aucune zone oversold → None
     assert result is None
@@ -440,8 +440,8 @@ async def test_rsi_ha_state_reset_on_new_cycle() -> None:
     strategy, sm, _ = make_strategy()
 
     # Pré-condition : injecter un état "sale" simulant une réutilisation
-    strategy._signal_direction = "short"
-    strategy._computed_sl_price = Decimal("999")
+    strategy._signal_direction = "short"  # type: ignore[attr-defined]
+    strategy._computed_sl_price = Decimal("999")  # type: ignore[attr-defined]
 
     # Envoyer une bougie en Phase 1 (conditions_met == 0) — reset doit se faire
     # AVANT l'évaluation de la zone RSI, même si la zone n'est pas atteinte

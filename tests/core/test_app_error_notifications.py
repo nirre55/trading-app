@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from pydantic import SecretStr
+
 from src.core.app import TradingApp
 from src.core.event_bus import EventBus
 from src.models.config import TelegramConfig
@@ -17,7 +19,7 @@ from src.notifications.notification_service import NotificationService
 
 
 def _make_notification_service(enabled: bool = True) -> NotificationService:
-    config = TelegramConfig(enabled=enabled, token="bot123:AAA", chat_id="999")
+    config = TelegramConfig(enabled=enabled, token=SecretStr("bot123:AAA"), chat_id="999")
     return NotificationService(config)
 
 

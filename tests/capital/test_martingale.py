@@ -7,6 +7,7 @@ réinitialisation et log d'avertissement.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +15,8 @@ import pytest
 from src.capital.martingale import MartingaleCapitalManager
 from src.models.config import CapitalConfig
 from src.models.exchange import MarketRules
+
+_CapitalMode = Literal["fixed_percent", "martingale", "martingale_inverse"]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -26,7 +29,7 @@ def make_config(
     max_steps: int | None = 3,
 ) -> CapitalConfig:
     return CapitalConfig(
-        mode=mode,
+        mode=cast(_CapitalMode, mode),
         risk_percent=risk_percent,
         risk_reward_ratio=2.0,
         factor=factor,

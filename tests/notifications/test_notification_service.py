@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pydantic import SecretStr
+
 from src.models.config import TelegramConfig
 from src.notifications.notification_service import NotificationService
 
 
 def _make_config(enabled: bool = True, token: str = "bot123:AAAA", chat_id: str = "999") -> TelegramConfig:
-    return TelegramConfig(enabled=enabled, token=token, chat_id=chat_id)
+    return TelegramConfig(enabled=enabled, token=SecretStr(token), chat_id=chat_id)
 
 
 class TestNotificationServiceInit:
